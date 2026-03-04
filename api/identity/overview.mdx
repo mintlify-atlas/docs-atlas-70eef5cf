@@ -1,0 +1,194 @@
+---
+title: Identity API Overview
+description: LibXMTP Identity management system for XMTP messaging
+---
+
+The LibXMTP Identity API provides a robust identity and association management system for XMTP messaging. It implements [XIP-46](https://github.com/xmtp/XIPs/pull/53) to manage associations between wallets and installations within an inbox.
+
+## Core Concepts
+
+### Inbox Identity
+
+An inbox in XMTP is identified by a unique `InboxId` and can have multiple associated members:
+
+- **Wallet addresses** (Ethereum, Passkey)
+- **Installation keys** (device/application identifiers)
+- **Recovery identifier** (primary wallet with special privileges)
+
+```rust
+// InboxId types
+pub type InboxIdRef<'a> = &'a str;
+pub type InboxId = String;
+```
+
+The `InboxId` is generated deterministically from a wallet address and nonce:
+
+```rust
+let inbox_id = identifier.inbox_id(nonce)?;
+```
+
+### Association State
+
+The `AssociationState` represents the current state of an inbox at a specific point in time. It tracks:
+
+- All associated members (wallets and installations)
+- The recovery identifier (primary wallet)
+- Seen signatures (for replay protection)
+- Member relationships (who added whom)
+
+See `associations.mdx:45-140` for implementation details.
+
+### Identity Updates
+
+Identity updates are the mechanism for modifying an inbox's association state. Each update contains one or more actions:
+
+- `CreateInbox` - Initialize a new inbox
+- `AddAssociation` - Associate a new member
+- `RevokeAssociation` - Remove a member
+- `ChangeRecoveryIdentity` - Change the recovery address
+
+Updates are signed, verified, and applied sequentially to maintain consistency.
+
+## Member Types
+
+### MemberIdentifier
+
+Represents any member that can be associated with an inbox:
+
+```rust
+pub enum MemberIdentifier {
+    Installation(Installation),  // Device/app installation
+    Ethereum(Ethereum),          // Ethereum wallet address
+    Passkey(Passkey),           // WebAuthn passkey
+}
+```
+
+### Identifier
+
+`Identifier` is a subset of `MemberIdentifier` that excludes installations (only account-level identifiers):
+
+```rust
+pub enum Identifier {
+    Ethereum(Ethereum),
+    Passkey(Passkey),
+}
+```
+
+See `member.rs:28-36` for the distinction.
+
+## Authentication Flow
+
+### InboxOwner Trait
+
+The `InboxOwner` trait defines the interface for entities that can own and sign for an inbox:
+
+```rust
+pub trait InboxOwner {
+    /// Get the identifier of the wallet
+    fn get_identifier(&self) -> Result<Identifier, IdentifierValidationError>;
+
+    /// Sign text with the wallet
+    fn sign(&self, text: &str) -> Result<UnverifiedSignature, SignatureError>;
+}
+```
+
+See `lib.rs:90-96` for the trait definition.
+
+### Signature Types
+
+LibXMTP supports multiple signature schemes:
+
+- **ERC-191** - Standard Ethereum signed message
+- **ERC-1271** - Smart contract wallet signatures
+- **InstallationKey** - Ed25519 signatures from installation keys
+- **P256** - Passkey signatures
+- **LegacyDelegated** - V2 legacy key signatures (deprecated)
+
+## Identity Strategy
+
+When building a client, you specify an `IdentityStrategy` to determine how the identity is initialized:
+
+```rust
+pub enum IdentityStrategy {
+    /// Create identity if not found in local store
+    CreateIfNotFound {
+        inbox_id: InboxId,
+        identifier: Identifier,
+        nonce: u64,
+        legacy_signed_private_key: Option<Vec<u8>>,
+    },
+    /// Use cached identity only
+    CachedOnly,
+    /// Pre-built identity for testing
+    #[cfg(any(test, feature = "test-utils"))]
+    ExternalIdentity(Identity),
+}
+```
+
+See `identity.rs:77-91` for strategy options.
+
+## Key Features
+
+### Multi-Device Support
+
+A single inbox can have multiple installation keys, allowing users to access their messages from different devices:
+
+```rust
+let installation_ids = association_state.installation_ids();
+```
+
+### Wallet Flexibility
+
+Users can associate multiple wallet addresses with a single inbox:
+
+```rust
+let identifiers = association_state.identifiers();
+```
+
+### Secure Revocation
+
+The recovery identifier can revoke associations, including cascading revocation of child installations:
+
+```rust
+// Revoking a wallet also revokes all its child installations
+let revoke_action = RevokeAssociation {
+    recovery_identifier_signature,
+    revoked_member,
+};
+```
+
+### Replay Protection
+
+All signatures are tracked to prevent replay attacks:
+
+```rust
+if state.has_seen(&signature) {
+    return Err(AssociationError::Replay);
+}
+```
+
+## Installation Limits
+
+To prevent abuse, inboxes have a maximum number of installations:
+
+```rust
+use xmtp_configuration::MAX_INSTALLATIONS_PER_INBOX;
+
+if current_installation_count >= MAX_INSTALLATIONS_PER_INBOX {
+    return Err(IdentityError::TooManyInstallations { ... });
+}
+```
+
+See `identity.rs:403-410` for the check.
+
+## Related Pages
+
+- [Inbox Management](./inbox.mdx) - Working with inboxes and identities
+- [Associations](./associations.mdx) - Managing wallet and installation associations
+
+## References
+
+- [XIP-46: Identity Association State](https://github.com/xmtp/XIPs/pull/53)
+- Source: `crates/xmtp_id/src/`
+- Source: `crates/xmtp_mls/src/identity.rs`
+- Source: `crates/xmtp_mls/src/identity_updates.rs`

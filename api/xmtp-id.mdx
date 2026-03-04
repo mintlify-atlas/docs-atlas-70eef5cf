@@ -1,0 +1,287 @@
+---
+title: "xmtp_id"
+description: "XMTP Identity implementation according to XIP-46"
+---
+
+## Overview
+
+The `xmtp_id` crate implements XMTP's identity system as specified in XIP-46. It provides identity management, wallet associations, signature verification, and smart contract wallet support for the XMTP protocol.
+
+## Installation
+
+```toml
+[dependencies]
+xmtp_id = "*"
+```
+
+## Key Exports
+
+<ParamField path="InboxId" type="String">
+  Global InboxID owned type. Represents a unique identifier for a user's inbox.
+</ParamField>
+
+<ParamField path="InboxIdRef" type="&str">
+  Reference type for InboxID. Used for passing inbox IDs without ownership transfer.
+</ParamField>
+
+<ParamField path="WalletAddress" type="String">
+  String type representing a blockchain wallet address.
+</ParamField>
+
+<ParamField path="InboxUpdate" type="struct">
+  Represents an update to an inbox's identity state.
+  
+  **Fields:**
+  - `sequence_id: u64` - Sequential identifier for ordering updates
+  - `server_timestamp_ns: u64` - Server timestamp in nanoseconds
+  - `update: UnverifiedIdentityUpdate` - The identity update payload
+</ParamField>
+
+## Core Modules
+
+### associations
+
+Manages identity associations between wallets and installations:
+- Creating inbox associations
+- Adding new wallet associations
+- Revoking associations
+- Verifying association states
+
+### scw_verifier
+
+Smart Contract Wallet (SCW) signature verification:
+- ERC-1271 signature validation
+- Chain-specific verification
+- Contract interaction for signature checks
+
+### constants
+
+Protocol constants and configuration values.
+
+### utils
+
+Utility functions for identity operations.
+
+## Main Types and Traits
+
+<ResponseField name="InboxOwner" type="trait">
+  Trait for types that can own an inbox and sign messages.
+  
+  **Methods:**
+  - `get_identifier() -> Result<Identifier>` - Get the wallet/account identifier
+  - `sign(text: &str) -> Result<UnverifiedSignature>` - Sign a text message
+</ResponseField>
+
+<ResponseField name="AsIdRef" type="trait">
+  Trait for types that can be referenced as an InboxId.
+  
+  **Method:**
+  - `as_ref() -> InboxIdRef` - Get a reference to the inbox ID
+</ResponseField>
+
+<ResponseField name="Identifier" type="enum">
+  Represents different types of identifiers in the system:
+  - Ethereum addresses
+  - Installation keys
+  - Other blockchain addresses
+</ResponseField>
+
+<ResponseField name="MemberIdentifier" type="struct">
+  Identifies a member in an association state (wallet or installation).
+</ResponseField>
+
+<ResponseField name="AssociationState" type="struct">
+  Represents the current state of an inbox's associations.
+  
+  **Key Fields:**
+  - List of associated wallet addresses
+  - List of associated installations
+  - Recovery addresses
+  - Association history
+</ResponseField>
+
+<ResponseField name="UnverifiedSignature" type="enum">
+  A signature that has not yet been verified.
+  
+  **Variants:**
+  - `RecoverableEcdsa` - ECDSA signature with recovery ID
+  - `InstallationKey` - EdDSA signature from installation key
+  - `LegacyDelegated` - Legacy delegated signature format
+</ResponseField>
+
+<ResponseField name="VerifiedSignature" type="struct">
+  A signature that has been cryptographically verified.
+  
+  **Key Methods:**
+  - `verify()` - Verify the signature
+  - `signer()` - Get the signer identifier
+</ResponseField>
+
+## Usage Examples
+
+### Implementing InboxOwner for a Wallet
+
+```rust
+use alloy::signers::local::PrivateKeySigner;
+use xmtp_id::InboxOwner;
+
+// PrivateKeySigner already implements InboxOwner
+let wallet = PrivateKeySigner::random();
+
+// Get the wallet's identifier
+let identifier = wallet.get_identifier()?;
+
+// Sign a message
+let signature = wallet.sign("Hello XMTP")?;
+```
+
+### Working with Inbox IDs
+
+```rust
+use xmtp_id::{InboxId, InboxIdRef, AsIdRef};
+
+// Create an inbox ID
+let inbox_id: InboxId = String::from("inbox_123");
+
+// Use as reference
+let inbox_ref: InboxIdRef = inbox_id.as_ref();
+
+// Pass to functions expecting InboxIdRef
+fn process_inbox(id: InboxIdRef) {
+    println!("Processing inbox: {}", id);
+}
+
+process_inbox(inbox_id.as_ref());
+```
+
+### Managing Associations
+
+```rust
+use xmtp_id::associations::{
+    builder::SignatureRequestBuilder,
+    AssociationState,
+    Identifier,
+};
+
+// Create a new inbox
+let create_request = SignatureRequestBuilder::new(inbox_id)
+    .create_inbox(wallet_address.clone(), nonce)
+    .build();
+
+// Add a new wallet association
+let add_request = SignatureRequestBuilder::new(inbox_id)
+    .add_association(new_wallet_address)
+    .build();
+
+// Apply updates to get current state
+let state = AssociationState::new(
+    inbox_id.clone(),
+    vec![update1, update2],
+)?;
+```
+
+### Verifying Identity Updates
+
+```rust
+use xmtp_id::associations::unverified::UnverifiedIdentityUpdate;
+
+// Receive an unverified update
+let unverified_update: UnverifiedIdentityUpdate = /* from network */;
+
+// Verify the update
+let verified_update = unverified_update.verify()?;
+
+// Apply to association state
+let new_state = verified_update.update_state(
+    Some(current_state),
+    timestamp_ns,
+)?;
+```
+
+### Smart Contract Wallet Verification
+
+```rust
+use xmtp_id::scw_verifier::SmartContractSignatureVerifier;
+
+// Create verifier with RPC endpoint
+let verifier = SmartContractSignatureVerifier::new(
+    "https://eth-mainnet.g.alchemy.com/v2/...",
+)?;
+
+// Verify a smart contract wallet signature
+let is_valid = verifier.verify(
+    contract_address,
+    signature_bytes,
+    message_hash,
+    chain_id,
+).await?;
+```
+
+## Association Types
+
+<ParamField path="CreateInbox" type="struct">
+  Action to create a new inbox with initial wallet association.
+  
+  **Fields:**
+  - `nonce: u64` - Unique nonce for inbox creation
+  - `account_identifier: Identifier` - Initial wallet/account
+  - `initial_identifier_signature: VerifiedSignature` - Signature proof
+</ParamField>
+
+<ParamField path="AddAssociation" type="struct">
+  Action to add a new member to an inbox.
+  
+  **Fields:**
+  - `existing_member_signature: VerifiedSignature` - Signature from existing member
+  - `new_member_signature: VerifiedSignature` - Signature from new member
+  - `new_member_identifier: MemberIdentifier` - New member to add
+</ParamField>
+
+<ParamField path="RevokeAssociation" type="struct">
+  Action to revoke an existing association.
+  
+  **Fields:**
+  - `recovery_address_signature: VerifiedSignature` - Signature from recovery address
+  - `revoked_member: MemberIdentifier` - Member to revoke
+</ParamField>
+
+<ParamField path="ChangeRecoveryAddress" type="struct">
+  Action to change the recovery address.
+  
+  **Fields:**
+  - `existing_recovery_address_signature: VerifiedSignature`
+  - `new_recovery_address: String`
+</ParamField>
+
+## Error Types
+
+```rust
+use xmtp_id::IdentityError;
+
+pub enum IdentityError {
+    KeyGenerationError(CryptoError),
+    UninitializedIdentity,
+    Deserialization(DecodeError),
+    UrlParseError(ParseError),
+    Signing(SignerError),
+}
+```
+
+## Features
+
+<ParamField path="test-utils" type="feature">
+  Testing utilities including mock implementations and test helpers.
+</ParamField>
+
+## Platform Support
+
+- Native (all platforms)
+- WebAssembly (with getrandom wasm_js feature)
+
+## Dependencies
+
+Key dependencies:
+- `alloy` - Ethereum wallet and signing
+- `ed25519-dalek` - EdDSA signatures
+- `xmtp_cryptography` - Cryptographic primitives
+- `xmtp_proto` - Protocol buffer definitions

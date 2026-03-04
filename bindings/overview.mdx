@@ -1,0 +1,171 @@
+---
+title: Language Bindings Overview
+description: LibXMTP provides language bindings for Node.js, Swift, Kotlin, and WebAssembly
+---
+
+LibXMTP is a shared Rust library implementing the XMTP messaging protocol using MLS (Messaging Layer Security). It provides language bindings for multiple platforms, enabling developers to build XMTP-powered applications across different environments.
+
+<Info>
+These bindings are low-level interfaces to the core LibXMTP Rust library. For most use cases, you should use the platform-specific SDKs instead, which provide higher-level abstractions and better developer experience.
+</Info>
+
+## Architecture
+
+The bindings layer sits between the core Rust implementation and platform-specific SDKs:
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      LANGUAGE BINDINGS                          │
+│  bindings/mobile (uniffi) │ bindings/wasm │ bindings/node (napi)│
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                ┌──────────────▼──────────────┐
+                │      xmtp_mls (Client)      │
+                │  Groups, messages, sync     │
+                └──────────────┬──────────────┘
+        ┌──────────┬───────────┼───────────┬──────────┐
+        ▼          ▼           ▼           ▼          ▼
+   xmtp_api   xmtp_db     xmtp_id    xmtp_proto  xmtp_cryptography
+   (traits)   (storage)   (identity) (protobuf)  (crypto ops)
+```
+
+## Available Platforms
+
+<CardGroup cols={2}>
+  <Card title="Node.js" icon="node-js" href="/bindings/node">
+    NAPI-RS bindings for JavaScript/TypeScript applications
+  </Card>
+  <Card title="Swift" icon="swift" href="/bindings/swift">
+    UniFFI-based bindings for iOS and macOS applications
+  </Card>
+  <Card title="Kotlin" icon="android" href="/bindings/kotlin">
+    UniFFI-based bindings for Android applications
+  </Card>
+  <Card title="WebAssembly" icon="globe" href="/bindings/wasm">
+    WASM bindings for browser-based applications
+  </Card>
+</CardGroup>
+
+## Binding Technologies
+
+### NAPI-RS (Node.js)
+
+The Node.js bindings use [NAPI-RS](https://napi.rs/) to create native Node.js addons from Rust. This provides:
+
+- Zero-copy data transfer between Rust and JavaScript
+- Async/await support with automatic runtime integration
+- Type-safe bindings with TypeScript definitions
+- Cross-platform compilation for all major operating systems
+
+### UniFFI (Mobile)
+
+The mobile bindings (Swift and Kotlin) use [Mozilla's UniFFI](https://mozilla.github.io/uniffi-rs/) to generate FFI bindings. This provides:
+
+- Automatic code generation for both platforms from a single Rust codebase
+- Memory-safe cross-language object passing using Arc pointers
+- Async support with platform-native executors
+- Concurrent access with Send + Sync guarantees
+
+### WebAssembly (WASM)
+
+The WASM bindings compile Rust to WebAssembly using [wasm-bindgen](https://rustwasm.github.io/wasm-bindgen/). This provides:
+
+- Browser-based XMTP messaging without a backend
+- OPFS (Origin Private File System) for encrypted local storage
+- Web Worker support for background operations
+- Small bundle sizes with code splitting
+
+## Key Patterns
+
+### Client Context Pattern
+
+All bindings expose a generic `Client<Context>` that can be parameterized with different API and database implementations:
+
+```rust
+Client<XmtpMlsLocalContext>  // Standard local context
+Client<CustomContext>         // Custom API/storage
+```
+
+### Error Handling
+
+Each platform wraps Rust errors appropriately:
+
+- **Node.js**: Converts to JavaScript Error objects via ErrorWrapper
+- **Swift/Kotlin**: Throws platform-native exceptions via UniFFI
+- **WASM**: Returns JavaScript Promise rejections
+
+### Async Runtime
+
+- **Node.js**: Integrates with Node.js event loop via NAPI async runtime
+- **Swift/Kotlin**: Uses Tokio multi-threaded runtime with UniFFI async support
+- **WASM**: Runs on browser event loop with wasm-bindgen-futures
+
+## Development Workflow
+
+### Prerequisites
+
+All bindings can be built using Nix for reproducible environments:
+
+```bash
+# Enter development shell for a specific platform
+nix develop .#node
+nix develop .#ios
+nix develop .#android
+nix develop .#wasm
+```
+
+Or use the `just` command runner from the repository root:
+
+```bash
+just node build
+just ios build
+just android build
+just wasm build
+```
+
+### Testing
+
+All bindings require a local XMTP node for testing:
+
+```bash
+# Start local backend (from repo root)
+just backend up
+
+# Run platform-specific tests
+just node test
+just ios test
+just android test
+just wasm test
+```
+
+## Code Quality
+
+Before committing changes to any bindings:
+
+```bash
+# Rust linting (required for all bindings)
+just lint
+
+# Platform-specific linting
+just node lint      # Clippy + cargo fmt + TypeScript prettier
+just ios lint       # SwiftLint + SwiftFormat
+just android lint   # Spotless + Android lint
+just wasm lint      # Clippy + cargo fmt
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Node.js Bindings" icon="node-js" href="/bindings/node">
+    Build JavaScript/TypeScript applications with NAPI-RS
+  </Card>
+  <Card title="Swift Bindings" icon="swift" href="/bindings/swift">
+    Build iOS and macOS applications with UniFFI
+  </Card>
+  <Card title="Kotlin Bindings" icon="android" href="/bindings/kotlin">
+    Build Android applications with UniFFI
+  </Card>
+  <Card title="WASM Bindings" icon="globe" href="/bindings/wasm">
+    Build browser-based applications with WebAssembly
+  </Card>
+</CardGroup>

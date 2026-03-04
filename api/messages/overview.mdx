@@ -1,0 +1,297 @@
+---
+title: Messages Overview
+description: Understanding message types, structure, and handling in LibXMTP
+---
+
+## Introduction
+
+LibXMTP provides a comprehensive messaging system built on MLS (Messaging Layer Security) that supports various content types, message enrichment, and real-time streaming. Messages are the core unit of communication in XMTP groups and conversations.
+
+## Core message types
+
+LibXMTP distinguishes between several message representations:
+
+### StoredGroupMessage
+
+Raw message data as stored in the local database. Contains encrypted message bytes, metadata, and delivery status.
+
+**Key fields:**
+- `id` - Unique message identifier (bytes)
+- `group_id` - Group this message belongs to (bytes)
+- `decrypted_message_bytes` - Encrypted content payload
+- `sent_at_ns` - Timestamp in nanoseconds
+- `sender_inbox_id` - Inbox ID of sender
+- `sender_installation_id` - Installation ID of sender
+- `kind` - Message kind (application, membership change, etc.)
+- `delivery_status` - Published, unpublished, or failed
+- `content_type` - Type of content (text, reaction, etc.)
+
+### DecodedMessage
+
+Enriched message with decoded content, reactions, and reply metadata. This is the primary type used when displaying messages to users.
+
+**Structure:**
+```rust
+pub struct DecodedMessage {
+    pub metadata: DecodedMessageMetadata,
+    pub content: MessageBody,
+    pub fallback_text: Option<String>,
+    pub reactions: Vec<DecodedMessage>,
+    pub num_replies: usize,
+}
+```
+
+See [DecodedMessage](/api/messages/decoded-message) for detailed documentation.
+
+### Message (Node.js bindings)
+
+Simplified message representation exposed to Node.js applications:
+
+```typescript
+interface Message {
+  id: string                    // Hex-encoded message ID
+  sentAtNs: bigint             // Nanosecond timestamp
+  conversationId: string       // Hex-encoded group ID
+  senderInboxId: string        // Sender's inbox ID
+  content: Uint8Array          // Raw content bytes
+  kind: GroupMessageKind       // Application or membership change
+  deliveryStatus: DeliveryStatus
+}
+```
+
+## Message lifecycle
+
+### Sending messages
+
+1. **Encode content** - Convert your data to `EncodedContent` using a codec
+2. **Send** - Call `conversation.send()` with encoded content and options
+3. **Publish** - Message is encrypted, signed, and sent to the network
+4. **Store** - Message is saved to local database
+
+```typescript
+import { encodeText } from '@xmtp/node-bindings'
+
+// Encode text content
+const encodedContent = encodeText('Hello, team!')
+
+// Send message
+const messageId = await conversation.send(
+  encodedContent,
+  { shouldPush: true, optimistic: false }
+)
+```
+
+**Send options:**
+- `shouldPush` - Whether to trigger push notifications
+- `optimistic` - If true, returns immediately without waiting for network confirmation
+
+### Receiving messages
+
+Messages can be retrieved in two ways:
+
+**Query historical messages:**
+```typescript
+// List messages with optional filtering
+const messages = await conversation.listMessages({
+  limit: 50,
+  sentAfterNs: Date.now() * 1000000,
+  direction: 'descending'
+})
+```
+
+**Stream real-time messages:**
+```typescript
+const stream = await conversation.streamMessages()
+for await (const message of stream) {
+  console.log(`New message: ${message.content}`)
+}
+```
+
+## Message enrichment
+
+The `list_enriched_messages()` / `listEnrichedMessages()` methods return `DecodedMessage` instances with additional context:
+
+- **Reactions** - All reactions to this message
+- **Reply count** - Number of replies referencing this message
+- **Reply context** - For reply messages, includes the referenced message
+- **Deletion state** - Marks messages deleted by sender or admin
+
+**Example:**
+```typescript
+const enrichedMessages = await conversation.listEnrichedMessages({
+  limit: 20
+})
+
+for (const msg of enrichedMessages) {
+  console.log(`Message: ${msg.content.text}`)
+  console.log(`Reactions: ${msg.reactions.length}`)
+  console.log(`Replies: ${msg.numReplies}`)
+}
+```
+
+## Message filtering
+
+Filter messages by various criteria:
+
+```typescript
+const options: ListMessagesOptions = {
+  sentAfterNs: BigInt(Date.now() - 86400000) * 1000000n, // Last 24 hours
+  sentBeforeNs: BigInt(Date.now()) * 1000000n,
+  limit: 100,
+  direction: 'descending',
+  contentTypes: [ContentType.Text, ContentType.Reply]
+}
+
+const messages = await conversation.listMessages(options)
+```
+
+**Available filters:**
+- `sentAfterNs` / `sentBeforeNs` - Time range in nanoseconds
+- `limit` - Maximum number of messages
+- `direction` - `'ascending'` or `'descending'`
+- `contentTypes` - Filter by content type
+- `deliveryStatus` - Filter by delivery status
+
+## Optimistic sending
+
+For faster UI updates, use optimistic sending:
+
+```typescript
+// Returns immediately with message ID
+const messageId = await conversation.send(
+  encodedContent,
+  { shouldPush: true, optimistic: true }
+)
+
+// Publish all pending messages later
+await conversation.publishMessages()
+```
+
+Or prepare messages for batch publishing:
+
+```typescript
+// Prepare multiple messages
+const id1 = conversation.prepareMessage(content1, true)
+const id2 = conversation.prepareMessage(content2, true)
+const id3 = conversation.prepareMessage(content3, true)
+
+// Publish specific message
+await conversation.publishStoredMessage(id1)
+
+// Or publish all pending
+await conversation.publishMessages()
+```
+
+## Message deletion
+
+Messages can be deleted by the sender or by group admins:
+
+```rust
+pub enum DeletedBy {
+    Sender,                  // Deleted by original sender
+    Admin(String),           // Deleted by admin (includes admin inbox_id)
+}
+```
+
+Deleted messages are replaced with a placeholder in enriched message lists:
+
+```rust
+MessageBody::DeletedMessage {
+    deleted_by: DeletedBy::Sender
+}
+```
+
+The original message data remains in the database but is marked as deleted and won't display content to users.
+
+## Message kinds
+
+Messages have different purposes indicated by their `kind`:
+
+```typescript
+enum GroupMessageKind {
+  Application,           // User-generated content
+  MembershipChange      // Group membership updates
+}
+```
+
+**Application messages** include:
+- Text, reactions, replies
+- Attachments, read receipts
+- Custom content types
+
+**Membership change messages** track:
+- Members added/removed
+- Admin role changes
+- Group metadata updates
+
+## Delivery status
+
+Track message delivery state:
+
+```typescript
+enum DeliveryStatus {
+  Unpublished,  // Prepared but not sent
+  Published,    // Successfully sent to network
+  Failed        // Send attempt failed
+}
+```
+
+Check status:
+```typescript
+if (message.deliveryStatus === DeliveryStatus.Failed) {
+  // Retry or notify user
+  await conversation.publishStoredMessage(message.id)
+}
+```
+
+## Best practices
+
+### Performance
+
+- Use `listMessages()` for basic message lists (faster)
+- Use `listEnrichedMessages()` only when you need reactions/replies
+- Implement pagination with `limit` and time-based filtering
+- Stream messages for real-time updates instead of polling
+
+### Error handling
+
+```typescript
+try {
+  const messageId = await conversation.send(content, { shouldPush: true })
+} catch (error) {
+  if (error.message.includes('network')) {
+    // Use optimistic send as fallback
+    const id = await conversation.send(content, { 
+      shouldPush: true, 
+      optimistic: true 
+    })
+    // Retry publishing later
+  }
+}
+```
+
+### Content type detection
+
+Always check content type before accessing type-specific fields:
+
+```typescript
+const content = message.content
+
+switch (content.type) {
+  case DecodedMessageContentType.Text:
+    console.log(content.text)
+    break
+  case DecodedMessageContentType.Reaction:
+    console.log(content.reaction.content)
+    break
+  case DecodedMessageContentType.Reply:
+    console.log(content.reply.content)
+    break
+}
+```
+
+## See also
+
+- [Content Types](/api/messages/content-types) - Supported message content types
+- [DecodedMessage](/api/messages/decoded-message) - Enriched message structure
+- [Sending Messages](/guides/sending-messages) - Detailed guide on message handling

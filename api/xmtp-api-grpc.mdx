@@ -1,0 +1,244 @@
+---
+title: "XMTP API gRPC"
+description: "gRPC implementation of the XMTP API"
+---
+
+## Overview
+
+The `xmtp_api_grpc` crate provides a gRPC implementation of the `XmtpApi` trait. It supports both native (HTTP/2) and WebAssembly (gRPC-Web) environments through platform-specific service types.
+
+## Source Location
+
+`crates/xmtp_api_grpc/`
+
+## GrpcClient
+
+The main gRPC client implementation that works across native and WASM environments.
+
+```rust
+pub struct GrpcClient {
+    inner: tonic::client::Grpc<GrpcService>,
+    app_version: MetadataValue<metadata::Ascii>,
+    libxmtp_version: MetadataValue<metadata::Ascii>,
+}
+```
+
+### Platform-Specific Services
+
+**Native (HTTP/2)**
+```rust
+pub type GrpcService = native::NativeGrpcService;
+```
+
+**WebAssembly (gRPC-Web)**
+```rust
+pub type GrpcService = wasm::GrpcWebService;
+```
+
+### Construction
+
+**Basic Creation**
+```rust
+pub fn create(host: &str, is_secure: bool) -> Result<Self, GrpcBuilderError>
+```
+
+Creates a gRPC client with the specified host and TLS setting.
+
+**With App Version**
+```rust
+pub fn create_with_version(
+    host: &str,
+    is_secure: bool,
+    app_version: AppVersion,
+) -> Result<Self, GrpcBuilderError>
+```
+
+Creates a gRPC client with application version metadata attached to all requests.
+
+**Builder Pattern**
+```rust
+pub fn builder() -> ClientBuilder
+```
+
+Returns a `ClientBuilder` for more flexible configuration.
+
+## ClientBuilder
+
+A fluent builder for constructing `GrpcClient` instances with custom configuration.
+
+```rust
+pub struct ClientBuilder {
+    pub host: Option<String>,
+    pub app_version: Option<MetadataValue<metadata::Ascii>>,
+    pub libxmtp_version: Option<MetadataValue<metadata::Ascii>>,
+    pub tls_channel: bool,
+    pub limit: Option<u64>,
+    pub retry: Option<Retry>,
+}
+```
+
+### Configuration Methods
+
+**Network Configuration**
+- `set_host(host: String)` - Set the gRPC server host URL
+- `set_tls(tls: bool)` - Enable/disable TLS
+- `rate_per_minute(limit: u32)` - Set rate limiting
+- `port() -> Result<Option<String>, GrpcBuilderError>` - Get port from configured host
+
+**Version Configuration**
+- `set_app_version(version: AppVersion) -> Result<(), GrpcBuilderError>` - Set application version
+- `set_libxmtp_version(version: String) -> Result<(), GrpcBuilderError>` - Set libxmtp version
+
+**Retry Configuration**
+- `set_retry(retry: Retry)` - Configure retry strategy
+
+**Build**
+- `build() -> Result<GrpcClient, GrpcBuilderError>` - Construct the client
+
+### Example
+
+```rust
+let client = GrpcClient::builder()
+    .set_host("https://grpc.example.com".to_string())
+    .set_tls(true)
+    .set_app_version(AppVersion::from("myapp/1.0.0"))
+    .build()?;
+```
+
+## Client Implementation
+
+The `GrpcClient` implements the `Client` trait from `xmtp_proto::api_client`, providing:
+
+### Request Method
+
+```rust
+async fn request(
+    &self,
+    request: http::request::Builder,
+    path: http::uri::PathAndQuery,
+    body: Bytes,
+) -> Result<http::Response<Bytes>, ApiClientError<GrpcError>>
+```
+
+Sends a unary gRPC request and returns the response.
+
+### Stream Method
+
+```rust
+async fn stream(
+    &self,
+    request: request::Builder,
+    path: PathAndQuery,
+    body: Bytes,
+) -> Result<http::Response<GrpcStream>, ApiClientError<GrpcError>>
+```
+
+Initiates a server-streaming gRPC request and returns a stream of responses.
+
+### Fake Stream Method
+
+```rust
+fn fake_stream(&self) -> http::Response<GrpcStream>
+```
+
+Creates an empty stream for testing purposes.
+
+## GrpcStream
+
+A stream of bytes from a gRPC network source.
+
+```rust
+pub struct GrpcStream {
+    inner: crate::streams::NonBlocking,
+}
+```
+
+Implements `Stream<Item = Result<Bytes, GrpcError>>` for asynchronous message streaming.
+
+## Connection Health Check
+
+```rust
+impl IsConnectedCheck for GrpcClient {
+    async fn is_connected(&self) -> bool
+}
+```
+
+Checks if the gRPC connection is ready to accept requests.
+
+## Error Types
+
+### GrpcBuilderError
+
+Errors that can occur during client construction:
+
+```rust
+pub enum GrpcBuilderError {
+    MissingAppVersion,
+    MissingLibxmtpVersion,
+    MissingHostUrl,
+    MissingXmtpdGatewayUrl,
+    Metadata(tonic::metadata::errors::InvalidMetadataValue),
+    InvalidUri(http::uri::InvalidUri),
+    Url(url::ParseError),
+    Transport(tonic::transport::Error), // Native only
+}
+```
+
+### GrpcError
+
+Errors that can occur during gRPC operations:
+
+```rust
+pub enum GrpcError {
+    InvalidUri(http::uri::InvalidUri),
+    Metadata(tonic::metadata::errors::InvalidMetadataValue),
+    Status(tonic::Status),
+    NotFound(String),
+    UnexpectedPayload,
+    MissingPayload,
+    Proto(xmtp_proto::ProtoError),
+    Decode(prost::DecodeError),
+    Unreachable,
+    Transport(tonic::transport::Error), // Native only
+}
+```
+
+Implements `RetryableError` - all gRPC errors are considered retryable by default.
+
+## Request Metadata
+
+All requests automatically include these metadata headers:
+- `x-app-version` - Application version from builder configuration
+- `x-libxmtp-version` - LibXMTP version (defaults to crate version)
+
+## Message Size Limits
+
+The client enforces payload size limits defined in `xmtp_configuration::GRPC_PAYLOAD_LIMIT` for both encoding and decoding.
+
+## Streaming Support
+
+The crate includes several stream utilities in the `streams` module:
+
+- `EscapableTonicStream` - Stream wrapper for handling tonic responses
+- `FakeEmptyStream` - Empty stream for testing
+- `NonBlockingWebStream` - Non-blocking stream adapter for WASM
+- `MultiplexedStream` - Multiplexed stream handling
+
+## Platform Compatibility
+
+**Native (not WASM)**
+- Uses HTTP/2 transport
+- Full tonic transport features
+- TCP connection pooling
+
+**WebAssembly**
+- Uses gRPC-Web protocol
+- HTTP/1.1 compatibility
+- Browser fetch API integration
+
+## Related Crates
+
+- `xmtp_api` - Core trait definitions
+- `xmtp_proto` - Protocol buffer definitions
+- `tonic` - gRPC framework
+- `xmtp_configuration` - Configuration constants

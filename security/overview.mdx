@@ -1,0 +1,161 @@
+---
+title: Security Overview
+description: LibXMTP's security architecture using MLS protocol with forward secrecy and post-compromise security
+---
+
+LibXMTP implements the [Messaging Layer Security (MLS) protocol](https://messaginglayersecurity.rocks/) using OpenMLS to provide secure, authenticated messaging with strong security guarantees.
+
+## Security Properties
+
+The security of XMTP rests on the MLS protocol. The chosen configuration provides:
+
+### Privacy and Authenticity
+
+- **End-to-end encryption**: All messages are encrypted using the MLS secret tree and AEAD
+- **Message authenticity**: Every message is authenticated through the MLS signature chain
+- **Metadata protection**: XMTP uses [private messages exclusively](https://github.com/xmtp/libxmtp/blob/3af97cb69435e5b9daa4577bad6a3bd187834d97/crates/xmtp_mls/src/groups/mod.rs#L1222C29-L1222C45), providing the highest metadata hiding properties possible in MLS
+
+### Forward Secrecy
+
+Forward secrecy ensures that past messages remain secure even if current keys are compromised.
+
+**XMTP provides forward secrecy through:**
+
+- Automatic key rotation: Path encryption secrets are updated periodically
+- Ephemeral keys: HPKE keys are rotated with each key package update
+- Limited key retention: Maximum of 3 past epochs retained (lower than OpenMLS default of 5)
+
+<Note>
+The `maximum_past_epochs` parameter of 3 is a trade-off between functionality and forward secrecy. This lower value (compared to OpenMLS default of 5) increases security by limiting the key material retained for past epochs.
+</Note>
+
+### Post-Compromise Security (PCS)
+
+Post-compromise security allows the system to heal from key compromise through subsequent key updates.
+
+**Path updates occur:**
+
+1. Before sending the first message to a group
+2. Before sending a message if 3 months have elapsed since the last path update
+
+<Warning>
+Signature keys are **not rotated**, as their public key forms a persistent identity for the installation. Only path encryption secrets are rotated.
+</Warning>
+
+### Harvest Now, Decrypt Later (HNDL) Protection
+
+With [PR #1851](https://github.com/xmtp/libxmtp/pull/1851), libxmtp provides **HNDL forward security** using post-quantum cryptography.
+
+**Key features:**
+
+- **XWing-06 encryption**: Welcome messages use post-quantum secure HPKE with XWing-06 key pairs
+- **HNDL-FS guarantee**: Even an attacker with a quantum computer in the future cannot decrypt messages encrypted before key deletion
+- **Limitation**: HNDL Post-Remove Security (HNDL-PRS) is not provided - removed clients break the HNDL chain
+
+See the [HNDL security analysis](https://github.com/xmtp/libxmtp/blob/main/crates/xmtp_mls/hndl_security.md) for technical details.
+
+## Cryptographic Parameters
+
+LibXMTP uses the following MLS configuration:
+
+```rust
+// Ciphersuite
+MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519
+
+// Parameters
+maximum_past_epochs: 3
+maximum_forward_ratchets: 1000
+```
+
+**Cryptographic primitives:**
+
+- **Key exchange**: X25519
+- **AEAD**: ChaCha20Poly1305
+- **Hash**: SHA-256
+- **Signatures**: Ed25519
+
+## Storage Security
+
+### Database Encryption
+
+The XMTP SQLite database supports optional encryption using [SQLCipher](https://www.zetetic.net/sqlcipher/).
+
+<Warning>
+App developers are **strongly encouraged** to use an encryption key for the database and store that key securely. However, key derivation, storage, and encryption are the app's responsibility and considered out of scope for the protocol.
+</Warning>
+
+The database stores:
+- MLS group state
+- Decrypted messages
+- Installation private keys
+- Identity information
+
+### Endpoint Security
+
+In the XMTP messaging app, private key material is stored in the secure key storage of mobile operating systems. XMTP encourages SDK users to do the same.
+
+## Transport Security
+
+XMTP uses **gRPC with TLS** (via [Rustls](https://github.com/xmtp/libxmtp/blob/3af97cb69435e5b9daa4577bad6a3bd187834d97/xmtp_api_grpc/src/grpc_api_helper.rs#L59)) to protect metadata during transmission.
+
+While the secure transport protects MLS and XMTP metadata, it is **not necessary** for end-to-end security - MLS provides that independently.
+
+## Threat Model
+
+### In Scope
+
+- Message privacy and authenticity
+- Forward secrecy
+- Post-compromise security
+- HNDL forward security
+- Credential validation
+- DoS and spam protection (IP-based rate limiting)
+
+### Out of Scope
+
+The following are explicitly **not** covered by XMTP's threat model:
+
+- Physical attacks on endpoints
+- Network privacy (IP addresses)
+- Deniability of messages
+- Membership privacy (inherited from MLS)
+- Ciphertext size attacks (XMTP does not use extra padding)
+- Quantum adversary attacks on signatures (no standardized post-quantum signature suites yet)
+- Push token privacy (for FCM notifications)
+
+## Additional Security Mechanisms
+
+### Consent
+
+XMTP allows blocking group invites from unwanted senders, providing spam protection at the application layer.
+
+### Signature Uniqueness
+
+The system protects against signature re-use:
+
+- **Between inboxes**: Inbox ID is included in all signature challenge text
+- **Within inbox**: Raw signatures are stored and checked for reuse
+
+### Trust Assumptions
+
+<Warning>
+The backend maintains a directory mapping wallet addresses to Inbox IDs and may return incorrect information. Backends can hide revocations of bindings. This is an inherent trust assumption in the current architecture.
+</Warning>
+
+## Key Package Security
+
+LibXMTP uses **last resort key packages only**, meaning key packages may be reused.
+
+**Mitigation strategy:**
+
+- Key packages are rotated immediately after receiving a Welcome message that used the published key package
+- Clients batch rotations when receiving multiple Welcomes simultaneously
+- Maximum of 2 HPKE keypairs retained (current + previous)
+
+While [Section 16.8 of RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html#name-keypackage-reuse) states key packages SHOULD NOT be reused, XMTP's decentralized nature makes ephemeral key packages impractical. The rotation protocol minimizes the reuse window.
+
+## Related Documentation
+
+- [Credential Validation](/security/credential-validation) - How identities are validated
+- [Key Rotation](/security/key-rotation) - Key package lifecycle and rotation
+- [Revocation](/security/revocation) - Installation and wallet revocation process

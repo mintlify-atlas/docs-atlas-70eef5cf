@@ -1,0 +1,476 @@
+---
+title: 'Permissions'
+description: 'Group permission policies and access control in LibXMTP'
+---
+
+## Overview
+
+LibXMTP implements a flexible permission system for group management. Permissions are stored as MLS Unknown Group Context Extensions and control who can perform various group actions.
+
+## PolicySet
+
+The `PolicySet` struct defines all permission policies for a group.
+
+```rust
+pub struct PolicySet {
+    pub add_member_policy: MembershipPolicies,
+    pub remove_member_policy: MembershipPolicies,
+    pub update_metadata_policy: HashMap<String, MetadataPolicies>,
+    pub add_admin_policy: PermissionsPolicies,
+    pub remove_admin_policy: PermissionsPolicies,
+    pub update_permissions_policy: PermissionsPolicies,
+}
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `add_member_policy` | `MembershipPolicies` | Who can add members |
+| `remove_member_policy` | `MembershipPolicies` | Who can remove members |
+| `update_metadata_policy` | `HashMap<String, MetadataPolicies>` | Per-field metadata update policies |
+| `add_admin_policy` | `PermissionsPolicies` | Who can add admins |
+| `remove_admin_policy` | `PermissionsPolicies` | Who can remove admins |
+| `update_permissions_policy` | `PermissionsPolicies` | Who can update permission policies |
+
+### Methods
+
+#### new
+
+```rust
+pub fn new(
+    add_member_policy: MembershipPolicies,
+    remove_member_policy: MembershipPolicies,
+    update_metadata_policy: HashMap<String, MetadataPolicies>,
+    add_admin_policy: PermissionsPolicies,
+    remove_admin_policy: PermissionsPolicies,
+    update_permissions_policy: PermissionsPolicies,
+) -> Self
+```
+
+Creates a new PolicySet with specified policies.
+
+#### new_dm
+
+```rust
+pub fn new_dm() -> Self
+```
+
+Creates a PolicySet for DM conversations (all membership/admin actions denied).
+
+#### evaluate_commit
+
+```rust
+pub fn evaluate_commit(&self, commit: &ValidatedCommit) -> bool
+```
+
+Core client-side verification that a commit adheres to the permission policies.
+
+**Parameters:**
+- `commit` - Validated commit to evaluate
+
+**Returns:** `true` if commit is valid, `false` otherwise
+
+**Validation Rules:**
+1. Add member policy not violated
+2. Remove member policy not violated (super admins cannot be removed)
+3. Metadata update policies not violated
+4. Admin add/remove policies not violated
+5. Super admin changes require super admin privileges
+6. Last super admin cannot be removed
+7. Permission changes require super admin privileges
+
+#### to_bytes / from_bytes
+
+```rust
+pub fn to_bytes(&self) -> Result<Vec<u8>, PolicyError>
+pub fn from_bytes(bytes: &[u8]) -> Result<Self, PolicyError>
+```
+
+Serialize/deserialize PolicySet for storage.
+
+## Preconfigured Policies
+
+### PreconfiguredPolicies Enum
+
+```rust
+pub enum PreconfiguredPolicies {
+    Default,      // "All Members" policy
+    AdminsOnly,   // "Admin Only" policy
+}
+```
+
+#### to_policy_set
+
+```rust
+pub fn to_policy_set(&self) -> PolicySet
+```
+
+Converts a preconfigured policy to a full PolicySet.
+
+#### from_policy_set
+
+```rust
+pub fn from_policy_set(policy_set: &PolicySet) -> Result<Self, PolicyError>
+```
+
+Detects which preconfigured policy matches a PolicySet (if any).
+
+### All Members (Default)
+
+The default preconfigured policy allows broad member participation:
+
+| Action | Policy |
+|--------|--------|
+| Add members | Allow (any member) |
+| Remove members | Allow if admin or super admin |
+| Update metadata (general) | Allow (any member) |
+| Update disappearing messages | Allow if admin or super admin |
+| Update protocol version | Allow if super admin |
+| Add admin | Allow if super admin |
+| Remove admin | Allow if super admin |
+| Update permissions | Allow if super admin |
+
+### Admin Only
+
+The admin-only policy restricts most actions to admins:
+
+| Action | Policy |
+|--------|--------|
+| Add members | Allow if admin or super admin |
+| Remove members | Allow if admin or super admin |
+| Update metadata (all fields) | Allow if admin or super admin |
+| Update protocol version | Allow if super admin |
+| Add admin | Allow if super admin |
+| Remove admin | Allow if super admin |
+| Update permissions | Allow if super admin |
+
+## Membership Policies
+
+### MembershipPolicies Enum
+
+```rust
+pub enum MembershipPolicies {
+    Standard(BasePolicies),
+    AndCondition(AndCondition),
+    AnyCondition(AnyCondition),
+}
+```
+
+Policies for adding/removing members and installations.
+
+#### Factory Methods
+
+```rust
+pub fn allow() -> Self
+pub fn deny() -> Self
+pub fn allow_if_actor_admin() -> Self
+pub fn allow_if_actor_super_admin() -> Self
+pub fn and(policies: Vec<MembershipPolicies>) -> Self
+pub fn any(policies: Vec<MembershipPolicies>) -> Self
+```
+
+### BasePolicies
+
+```rust
+pub enum BasePolicies {
+    Allow,
+    Deny,
+    AllowSameMember,
+    AllowIfAdminOrSuperAdmin,
+    AllowIfSuperAdmin,
+}
+```
+
+Base membership policies:
+
+- **Allow** - Allow unconditionally
+- **Deny** - Deny unconditionally
+- **AllowSameMember** - Allow if change applies to actor's own installations
+- **AllowIfAdminOrSuperAdmin** - Allow if actor is admin or super admin
+- **AllowIfSuperAdmin** - Allow if actor is super admin
+
+### MembershipPolicy Trait
+
+```rust
+pub trait MembershipPolicy {
+    fn evaluate(&self, actor: &CommitParticipant, change: &Inbox) -> bool;
+    fn to_proto(&self) -> Result<MembershipPolicyProto, PolicyError>;
+}
+```
+
+Implemented by all membership policy types.
+
+## Metadata Policies
+
+### MetadataPolicies Enum
+
+```rust
+pub enum MetadataPolicies {
+    Standard(MetadataBasePolicies),
+    AndCondition(MetadataAndCondition),
+    AnyCondition(MetadataAnyCondition),
+}
+```
+
+Policies for updating metadata fields.
+
+#### Factory Methods
+
+```rust
+pub fn allow() -> Self
+pub fn deny() -> Self
+pub fn allow_if_actor_admin() -> Self
+pub fn allow_if_actor_super_admin() -> Self
+pub fn and(policies: Vec<MetadataPolicies>) -> Self
+pub fn any(policies: Vec<MetadataPolicies>) -> Self
+```
+
+#### default_map
+
+```rust
+pub fn default_map(policies: MetadataPolicies) -> HashMap<String, MetadataPolicies>
+```
+
+Creates a default map of metadata policies for all supported fields.
+
+**Special Cases:**
+- `MessageDisappearInNS` and `MessageDisappearFromNS` default to admin-only
+- `MinimumSupportedProtocolVersion` defaults to super-admin-only
+- Other fields use the provided policy
+
+### MetadataBasePolicies
+
+```rust
+pub enum MetadataBasePolicies {
+    Allow,
+    Deny,
+    AllowIfActorAdminOrSuperAdmin,
+    AllowIfActorSuperAdmin,
+}
+```
+
+### MetadataPolicy Trait
+
+```rust
+pub trait MetadataPolicy {
+    fn evaluate(&self, actor: &CommitParticipant, change: &MetadataFieldChange) -> bool;
+    fn to_proto(&self) -> Result<MetadataPolicyProto, PolicyError>;
+}
+```
+
+## Permissions Policies
+
+### PermissionsPolicies Enum
+
+```rust
+pub enum PermissionsPolicies {
+    Standard(PermissionsBasePolicies),
+    AndCondition(PermissionsAndCondition),
+    AnyCondition(PermissionsAnyCondition),
+}
+```
+
+Policies for updating group permissions and admin lists.
+
+#### Factory Methods
+
+```rust
+pub fn deny() -> Self
+pub fn allow_if_actor_admin() -> Self
+pub fn allow_if_actor_super_admin() -> Self
+pub fn and(policies: Vec<PermissionsPolicies>) -> Self
+pub fn any(policies: Vec<PermissionsPolicies>) -> Self
+```
+
+### PermissionsBasePolicies
+
+```rust
+pub enum PermissionsBasePolicies {
+    Deny,
+    AllowIfActorAdminOrSuperAdmin,
+    AllowIfActorSuperAdmin,
+}
+```
+
+**Note:** There is no "Allow" base policy for permissions (more restrictive than membership/metadata).
+
+### PermissionsPolicy Trait
+
+```rust
+pub trait PermissionsPolicy {
+    fn evaluate(&self, actor: &CommitParticipant) -> bool;
+    fn to_proto(&self) -> Result<PermissionsPolicyProto, PolicyError>;
+}
+```
+
+## Composite Policies
+
+### AndCondition
+
+Evaluates to `true` if **all** contained policies evaluate to `true`.
+
+```rust
+let policy = MembershipPolicies::and(vec![
+    MembershipPolicies::allow_if_actor_admin(),
+    // additional policies...
+]);
+```
+
+### AnyCondition
+
+Evaluates to `true` if **any** contained policy evaluates to `true`.
+
+```rust
+let policy = MembershipPolicies::any(vec![
+    MembershipPolicies::allow_if_actor_admin(),
+    MembershipPolicies::allow_if_actor_super_admin(),
+]);
+```
+
+## GroupMutablePermissions
+
+Wrapper struct for storing permissions as an MLS extension.
+
+```rust
+pub struct GroupMutablePermissions {
+    pub policies: PolicySet,
+}
+```
+
+### Methods
+
+#### new
+
+```rust
+pub fn new(policies: PolicySet) -> Self
+```
+
+#### preconfigured_policy
+
+```rust
+pub fn preconfigured_policy(
+    &self,
+) -> Result<PreconfiguredPolicies, GroupMutablePermissionsError>
+```
+
+Detects if the policies match a preconfigured policy.
+
+### Conversions
+
+```rust
+impl TryFrom<GroupMutablePermissions> for Vec<u8>
+impl TryFrom<&Vec<u8>> for GroupMutablePermissions
+impl TryFrom<&Extensions> for GroupMutablePermissions
+impl TryFrom<&OpenMlsGroup> for GroupMutablePermissions
+```
+
+### Helper Function
+
+```rust
+pub fn extract_group_permissions(
+    group: &OpenMlsGroup,
+) -> Result<GroupMutablePermissions, GroupMutablePermissionsError>
+```
+
+Extracts permissions from an OpenMLS group.
+
+## Admin Roles
+
+### Admin
+
+- Can perform actions allowed by admin-or-super-admin policies
+- Cannot modify super admins
+- Cannot change permission policies
+
+### Super Admin
+
+- Can perform all admin actions
+- Can add/remove other super admins (but not the last one)
+- Can add/remove regular admins
+- Can change permission policies
+- Automatically set as the group creator
+- Cannot be removed from the group (must remain at least one)
+- Cannot leave the group (must be demoted first)
+
+## Unrecognized Metadata Fields
+
+When evaluating metadata changes for fields without explicit policies:
+
+- Fields starting with `_` (super admin prefix): Require super admin
+- All other fields: Require admin or super admin
+
+## Error Handling
+
+### PolicyError
+
+```rust
+pub enum PolicyError {
+    Serialization(prost::EncodeError),
+    Deserialization(prost::DecodeError),
+    MissingMetadataPolicyField { name: String },
+    InvalidPolicy,
+    InvalidPresetPolicy,
+    InvalidMetadataPolicy,
+    InvalidMembershipPolicy,
+    InvalidPermissionsPolicy,
+    // ... proto conversion errors
+}
+```
+
+### GroupMutablePermissionsError
+
+```rust
+pub enum GroupMutablePermissionsError {
+    Serialization(prost::EncodeError),
+    Deserialization(prost::DecodeError),
+    Policy(PolicyError),
+    InvalidConversationType,
+    MissingPolicies,
+    MissingExtension,
+    InvalidPermissionPolicyOption,
+}
+```
+
+## Usage Examples
+
+### Creating a Custom Policy
+
+```rust
+use xmtp_mls::groups::group_permissions::*;
+
+let custom_policy = PolicySet::new(
+    MembershipPolicies::allow_if_actor_admin(),  // Add members: admin only
+    MembershipPolicies::allow_if_actor_admin(),  // Remove members: admin only
+    MetadataPolicies::default_map(MetadataPolicies::allow()),  // Metadata: allow all
+    PermissionsPolicies::allow_if_actor_super_admin(),  // Add admin: super admin only
+    PermissionsPolicies::allow_if_actor_super_admin(),  // Remove admin: super admin only
+    PermissionsPolicies::allow_if_actor_super_admin(),  // Update permissions: super admin only
+);
+```
+
+### Using Preconfigured Policies
+
+```rust
+let default_policy = PreconfiguredPolicies::Default.to_policy_set();
+let admin_only_policy = PreconfiguredPolicies::AdminsOnly.to_policy_set();
+```
+
+### Extracting Permissions from a Group
+
+```rust
+let permissions = extract_group_permissions(&mls_group)?;
+let policy_set = &permissions.policies;
+
+if let Ok(preset) = permissions.preconfigured_policy() {
+    println!("Using preset: {:?}", preset);
+}
+```
+
+## Source References
+
+- PolicySet: `crates/xmtp_mls/src/groups/group_permissions.rs:884`
+- Preconfigured Policies: `crates/xmtp_mls/src/groups/group_permissions.rs:1311`
+- Membership Policies: `crates/xmtp_mls/src/groups/group_permissions.rs:670`
+- Metadata Policies: `crates/xmtp_mls/src/groups/group_permissions.rs:173`
+- Permissions Policies: `crates/xmtp_mls/src/groups/group_permissions.rs:430`

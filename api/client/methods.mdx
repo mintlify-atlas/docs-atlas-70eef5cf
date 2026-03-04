@@ -1,0 +1,920 @@
+---
+title: Client Methods
+description: Complete reference for Client methods
+---
+
+Complete method reference for the `Client` struct.
+
+## Identity Methods
+
+### `inbox_id()`
+
+Get the client's inbox ID.
+
+**Returns:** `InboxIdRef<'_>` - Reference to the inbox ID string
+
+**Source:** `crates/xmtp_mls/src/client.rs:280`
+
+```rust
+let inbox_id = client.inbox_id();
+println!("Inbox ID: {}", inbox_id);
+```
+
+### `installation_public_key()`
+
+Get the client's installation public key (also called installation_id).
+
+**Returns:** `InstallationId` - Public key bytes identifying this installation
+
+**Source:** `crates/xmtp_mls/src/client.rs:276`
+
+```rust
+let installation_id = client.installation_public_key();
+```
+
+### `identity()`
+
+Get a reference to the client's identity.
+
+**Returns:** `&Identity` - Reference to the identity object
+
+**Source:** `crates/xmtp_mls/src/client.rs:520`
+
+```rust
+let identity = client.identity();
+if identity.is_ready() {
+    println!("Identity is registered");
+}
+```
+
+### `register_identity(signature_request)`
+
+Register the client's identity on the network.
+
+<ParamField path="signature_request" type="SignatureRequest" required>
+  Signed request containing identity updates to publish
+</ParamField>
+
+**Returns:** `Result<(), ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:875`
+
+**Process:**
+1. Checks if already registered (crash recovery)
+2. Generates and stores key package locally
+3. Validates signatures without network pollution
+4. Uploads key package to network
+5. Publishes identity update
+6. Fetches and stores identity in local database
+7. Marks identity as ready
+
+```rust
+let signature_request = /* obtain signed request */;
+client.register_identity(signature_request).await?;
+```
+
+### `inbox_state(refresh_from_network)`
+
+Get the association state for the client's inbox.
+
+<ParamField path="refresh_from_network" type="bool" required>
+  If true, fetch latest state from network. If false, use local database.
+</ParamField>
+
+**Returns:** `Result<AssociationState, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:369`
+
+```rust
+let state = client.inbox_state(true).await?;
+for installation in state.installation_ids() {
+    println!("Installation: {}", hex::encode(installation));
+}
+```
+
+### `inbox_addresses(refresh_from_network, inbox_ids)`
+
+Get association states for multiple inboxes.
+
+<ParamField path="refresh_from_network" type="bool" required>
+  Whether to fetch from network
+</ParamField>
+
+<ParamField path="inbox_ids" type="Vec<InboxIdRef<'_>>" required>
+  List of inbox IDs to query
+</ParamField>
+
+**Returns:** `Result<Vec<AssociationState>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:387`
+
+```rust
+let inbox_ids = vec!["inbox_1", "inbox_2"];
+let states = client.inbox_addresses(true, inbox_ids).await?;
+```
+
+### `find_inbox_id_from_identifier(conn, identifier)`
+
+Look up an inbox ID by blockchain address or other identifier.
+
+<ParamField path="conn" type="&impl DbQuery" required>
+  Database connection
+</ParamField>
+
+<ParamField path="identifier" type="Identifier" required>
+  Account identifier (address, etc.)
+</ParamField>
+
+**Returns:** `Result<Option<String>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:310`
+
+```rust
+let conn = client.db();
+let identifier = Identifier::Address("0x...".to_string());
+if let Some(inbox_id) = client.find_inbox_id_from_identifier(&conn, identifier).await? {
+    println!("Found inbox: {}", inbox_id);
+}
+```
+
+### `inbox_sequence_id(conn)`
+
+Get the highest sequence_id from the local database for the client's inbox.
+
+<ParamField path="conn" type="&DbConnection<Connection>" required>
+  Database connection
+</ParamField>
+
+**Returns:** `Result<i64, StorageError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:359`
+
+**Note:** May not be consistent with network state.
+
+```rust
+let conn = DbConnection::new(client.db());
+let sequence_id = client.inbox_sequence_id(&conn)?;
+```
+
+### `fetch_inbox_updates_count(refresh_from_network, inbox_ids)`
+
+Get total number of inbox updates for specified inboxes.
+
+<ParamField path="refresh_from_network" type="bool" required>
+  Whether to refresh from network first
+</ParamField>
+
+<ParamField path="inbox_ids" type="Vec<InboxIdRef<'_>>" required>
+  Inbox IDs to check
+</ParamField>
+
+**Returns:** `Result<HashMap<InboxId, u32>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:409`
+
+```rust
+let counts = client.fetch_inbox_updates_count(true, vec!["inbox_1"]).await?;
+```
+
+### `fetch_own_inbox_updates_count(refresh_from_network)`
+
+Get total number of inbox updates for the client's own inbox.
+
+<ParamField path="refresh_from_network" type="bool" required>
+  Whether to refresh from network
+</ParamField>
+
+**Returns:** `Result<u32, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:426`
+
+```rust
+let count = client.fetch_own_inbox_updates_count(true).await?;
+println!("Total updates: {}", count);
+```
+
+### `inbox_creation_signature_kind(inbox_id, refresh_from_network)`
+
+Get the signature type used to create an inbox.
+
+<ParamField path="inbox_id" type="InboxIdRef<'_>" required>
+  Inbox ID to check
+</ParamField>
+
+<ParamField path="refresh_from_network" type="bool" required>
+  Whether to fetch updates from network first
+</ParamField>
+
+**Returns:** `Result<Option<SignatureKind>, ClientError>`
+- `Some(SignatureKind)` - The signature kind used
+- `None` - Inbox doesn't exist or creation info unavailable
+
+**Source:** `crates/xmtp_mls/src/client.rs:448`
+
+```rust
+if let Some(kind) = client.inbox_creation_signature_kind("inbox_1", true).await? {
+    println!("Created with: {:?}", kind);
+}
+```
+
+## Group Management
+
+### `create_group(permissions_policy_set, opts)`
+
+Create a new group with default or custom settings.
+
+<ParamField path="permissions_policy_set" type="Option<PolicySet>">
+  Custom permissions policy. Uses default if None.
+</ParamField>
+
+<ParamField path="opts" type="Option<GroupMetadataOptions>">
+  Group metadata options (name, image, etc.)
+</ParamField>
+
+**Returns:** `Result<MlsGroup<Context>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:539`
+
+**Requirements:** Must call `register_identity()` first.
+
+```rust
+let group = client.create_group(None, None)?;
+```
+
+### `create_group_with_members(inbox_ids, permissions_policy_set, opts)`
+
+Create a group and immediately add members.
+
+<ParamField path="inbox_ids" type="&[impl AsIdRef]" required>
+  Inbox IDs of members to add
+</ParamField>
+
+<ParamField path="permissions_policy_set" type="Option<PolicySet>">
+  Custom permissions policy
+</ParamField>
+
+<ParamField path="opts" type="Option<GroupMetadataOptions>">
+  Group metadata options
+</ParamField>
+
+**Returns:** `Result<MlsGroup<Context>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:582`
+
+```rust
+let members = vec!["inbox_1", "inbox_2"];
+let group = client.create_group_with_members(&members, None, None).await?;
+```
+
+### `create_group_with_identifiers(account_identifiers, permissions_policy_set, opts)`
+
+Create a group and add members by their account identifiers.
+
+<ParamField path="account_identifiers" type="&[Identifier]" required>
+  Account identifiers (addresses, etc.) of members
+</ParamField>
+
+<ParamField path="permissions_policy_set" type="Option<PolicySet>">
+  Custom permissions policy
+</ParamField>
+
+<ParamField path="opts" type="Option<GroupMetadataOptions>">
+  Group metadata options
+</ParamField>
+
+**Returns:** `Result<MlsGroup<Context>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:569`
+
+**Note:** Looks up inbox IDs for each identifier before adding.
+
+```rust
+let identifiers = vec![
+    Identifier::Address("0x123...".to_string()),
+    Identifier::Address("0x456...".to_string()),
+];
+let group = client.create_group_with_identifiers(&identifiers, None, None).await?;
+```
+
+### `find_or_create_dm(inbox_id, opts)`
+
+Find existing DM or create new one with the specified inbox.
+
+<ParamField path="inbox_id" type="impl AsIdRef" required>
+  Target inbox ID
+</ParamField>
+
+<ParamField path="opts" type="Option<DMMetadataOptions>">
+  DM metadata options
+</ParamField>
+
+**Returns:** `Result<MlsGroup<Context>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:648`
+
+```rust
+let dm = client.find_or_create_dm("target_inbox_id", None).await?;
+```
+
+### `find_or_create_dm_by_identity(target_identity, opts)`
+
+Find or create DM by account identifier.
+
+<ParamField path="target_identity" type="Identifier" required>
+  Account identifier of target
+</ParamField>
+
+<ParamField path="opts" type="Option<DMMetadataOptions>">
+  DM metadata options
+</ParamField>
+
+**Returns:** `Result<MlsGroup<Context>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:627`
+
+**Note:** Returns error if no inbox found for the identifier.
+
+```rust
+let identifier = Identifier::Address("0x...".to_string());
+let dm = client.find_or_create_dm_by_identity(identifier, None).await?;
+```
+
+### `group(group_id)`
+
+Look up a group by its ID.
+
+<ParamField path="group_id" type="&Vec<u8>" required>
+  Group ID bytes
+</ParamField>
+
+**Returns:** `Result<MlsGroup<Context>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:678`
+
+```rust
+let group = client.group(&group_id)?;
+```
+
+### `stitched_group(group_id)`
+
+Look up a group by ID while stitching duplicate DMs.
+
+<ParamField path="group_id" type="&[u8]" required>
+  Group ID bytes
+</ParamField>
+
+**Returns:** `Result<MlsGroup<Context>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:688`
+
+**Note:** For DMs, may return a different group ID if this DM has been superseded.
+
+```rust
+let group = client.stitched_group(&group_id)?;
+```
+
+### `dm_group_from_target_inbox(target_inbox_id)`
+
+Look up an active DM by the target's inbox ID.
+
+<ParamField path="target_inbox_id" type="String" required>
+  Target inbox ID
+</ParamField>
+
+**Returns:** `Result<MlsGroup<Context>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:731`
+
+```rust
+let dm = client.dm_group_from_target_inbox("target_inbox".to_string())?;
+```
+
+### `find_groups(args)`
+
+Query for groups with optional filters.
+
+<ParamField path="args" type="GroupQueryArgs" required>
+  Query arguments:
+  - `allowed_states`: Filter by membership states
+  - `created_after_ns`: Filter by creation time
+  - `created_before_ns`: Filter by creation time
+  - `limit`: Maximum number of results
+  - `consent_states`: Filter by consent status
+  - `conversation_type`: Filter by type (DM, Group, etc.)
+</ParamField>
+
+**Returns:** `Result<Vec<MlsGroup<Context>>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:809`
+
+```rust
+let args = GroupQueryArgs {
+    limit: Some(10),
+    conversation_type: Some(ConversationType::Group),
+    ..Default::default()
+};
+let groups = client.find_groups(args)?;
+```
+
+### `list_conversations(args)`
+
+List conversations with last message and metadata.
+
+<ParamField path="args" type="GroupQueryArgs" required>
+  Query arguments (same as find_groups)
+</ParamField>
+
+**Returns:** `Result<Vec<ConversationListItem<Context>>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:816`
+
+**Note:** Defaults to ordering by last activity.
+
+```rust
+let conversations = client.list_conversations(GroupQueryArgs::default())?;
+for item in conversations {
+    if let Some(msg) = item.last_message {
+        println!("Last message: {:?}", msg);
+    }
+}
+```
+
+### `find_duplicate_dms_for_group(group_id)`
+
+Find all duplicate DMs for a given group.
+
+<ParamField path="group_id" type="&[u8]" required>
+  Group ID to check
+</ParamField>
+
+**Returns:** `Result<Vec<MlsGroup<Context>>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:706`
+
+```rust
+let duplicates = client.find_duplicate_dms_for_group(&group_id)?;
+```
+
+### `group_disappearing_settings(group_id)`
+
+Get message disappearing settings for a group.
+
+<ParamField path="group_id" type="&[u8]" required>
+  Group ID
+</ParamField>
+
+**Returns:** `Result<Option<MessageDisappearingSettings>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:718`
+
+```rust
+if let Some(settings) = client.group_disappearing_settings(&group_id)? {
+    println!("Messages disappear after: {} seconds", settings.duration_seconds);
+}
+```
+
+## Message Methods
+
+### `message(message_id)`
+
+Look up a message by its ID.
+
+<ParamField path="message_id" type="Vec<u8>" required>
+  Message ID bytes
+</ParamField>
+
+**Returns:** `Result<StoredGroupMessage, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:754`
+
+```rust
+let message = client.message(message_id)?;
+```
+
+### `message_v2(message_id)`
+
+Look up and enrich a message by ID.
+
+<ParamField path="message_id" type="Vec<u8>" required>
+  Message ID bytes
+</ParamField>
+
+**Returns:** `Result<DecodedMessage, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:762`
+
+**Note:** Returns enriched message with decoded content.
+
+```rust
+let decoded = client.message_v2(message_id)?;
+println!("Decoded content: {:?}", decoded.content);
+```
+
+### `delete_message(message_id)`
+
+Delete a message by its ID.
+
+<ParamField path="message_id" type="Vec<u8>" required>
+  Message ID bytes
+</ParamField>
+
+**Returns:** `Result<usize, ClientError>` - Number of messages deleted (0 or 1)
+
+**Source:** `crates/xmtp_mls/src/client.rs:783`
+
+**Note:** Idempotent - doesn't error if message not found.
+
+```rust
+let deleted = client.delete_message(message_id)?;
+if deleted > 0 {
+    println!("Message deleted");
+}
+```
+
+## Synchronization
+
+### `sync_welcomes()`
+
+Download all unread welcome messages and create groups.
+
+**Returns:** `Result<Vec<MlsGroup<Context>>, GroupError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:985`
+
+**Note:** Ignores malformed messages. Returns newly created groups.
+
+```rust
+let new_groups = client.sync_welcomes().await?;
+println!("Joined {} new groups", new_groups.len());
+```
+
+### `sync_all_groups(groups)`
+
+Sync specified groups to receive latest messages.
+
+<ParamField path="groups" type="Vec<MlsGroup<Context>>" required>
+  Groups to sync
+</ParamField>
+
+**Returns:** `Result<GroupSyncSummary, GroupError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:994`
+
+```rust
+let groups = client.find_groups(GroupQueryArgs::default())?;
+let summary = client.sync_all_groups(groups).await?;
+println!("Synced {}/{} groups", summary.num_synced, summary.num_eligible);
+```
+
+### `sync_all_welcomes_and_groups(consent_states)`
+
+Sync welcomes and then sync all groups.
+
+<ParamField path="consent_states" type="Option<Vec<ConsentState>>">
+  Filter groups by consent state
+</ParamField>
+
+**Returns:** `Result<GroupSyncSummary, GroupError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:1006`
+
+```rust
+let summary = client.sync_all_welcomes_and_groups(None).await?;
+```
+
+### `sync_all_welcomes_and_device_sync_groups()`
+
+Sync welcomes and device sync groups (preferences).
+
+**Returns:** `Result<GroupSyncSummary, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:1016`
+
+```rust
+let summary = client.sync_all_welcomes_and_device_sync_groups().await?;
+```
+
+### `wait_for_sync_worker_init()`
+
+Wait until the sync worker is initialized and running.
+
+**Returns:** (async fn)
+
+**Source:** `crates/xmtp_mls/src/client.rs:262`
+
+```rust
+client.wait_for_sync_worker_init().await;
+```
+
+## Consent State
+
+### `set_consent_states(records)`
+
+Set consent records in the local database.
+
+<ParamField path="records" type="&[StoredConsentRecord]" required>
+  Consent records to store
+</ParamField>
+
+**Returns:** `Result<(), ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:469`
+
+**Note:** Broadcasts changes to sync workers.
+
+```rust
+use xmtp_db::consent_record::{ConsentState, ConsentType, StoredConsentRecord};
+
+let record = StoredConsentRecord {
+    entity_type: ConsentType::InboxId,
+    entity: "target_inbox".to_string(),
+    state: ConsentState::Allowed,
+};
+client.set_consent_states(&[record]).await?;
+```
+
+### `get_consent_state(entity_type, entity)`
+
+Get the consent state for an entity.
+
+<ParamField path="entity_type" type="ConsentType" required>
+  Type of entity (Address, InboxId, ConversationId)
+</ParamField>
+
+<ParamField path="entity" type="String" required>
+  Entity identifier
+</ParamField>
+
+**Returns:** `Result<ConsentState, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:496`
+
+```rust
+let state = client.get_consent_state(
+    ConsentType::InboxId,
+    "target_inbox".to_string()
+).await?;
+```
+
+## Network Queries
+
+### `can_message(account_identifiers)`
+
+Check if account identifiers can receive messages.
+
+<ParamField path="account_identifiers" type="&[Identifier]" required>
+  Account identifiers to check
+</ParamField>
+
+**Returns:** `Result<HashMap<Identifier, bool>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:1074`
+
+```rust
+let identifiers = vec![
+    Identifier::Address("0x123...".to_string()),
+];
+let results = client.can_message(&identifiers).await?;
+for (ident, can_msg) in results {
+    println!("{}: {}", ident, can_msg);
+}
+```
+
+### `get_key_packages_for_installation_ids(installation_ids)`
+
+Fetch current key packages from the network.
+
+<ParamField path="installation_ids" type="Vec<Vec<u8>>" required>
+  Installation IDs to fetch key packages for
+</ParamField>
+
+**Returns:** `Result<HashMap<Vec<u8>, Result<VerifiedKeyPackageV2, KeyPackageVerificationError>>, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:969`
+
+```rust
+let installation_ids = vec![installation_id_bytes];
+let key_packages = client.get_key_packages_for_installation_ids(installation_ids).await?;
+```
+
+### `validate_credential_against_network(conn, credential, installation_pub_key)`
+
+Validate a credential against the network.
+
+<ParamField path="conn" type="&DbConnection<Connection>" required>
+  Database connection
+</ParamField>
+
+<ParamField path="credential" type="&[u8]" required>
+  Credential bytes to validate
+</ParamField>
+
+<ParamField path="installation_pub_key" type="Vec<u8>" required>
+  Installation public key to verify
+</ParamField>
+
+**Returns:** `Result<InboxId, ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:1049`
+
+```rust
+let conn = DbConnection::new(client.db());
+let inbox_id = client.validate_credential_against_network(
+    &conn,
+    &credential_bytes,
+    installation_key,
+).await?;
+```
+
+## Key Package Management
+
+### `queue_key_rotation()`
+
+Schedule key rotation to occur soon (within 5 seconds).
+
+**Returns:** `Result<(), ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:945`
+
+```rust
+client.queue_key_rotation().await?;
+```
+
+### `rotate_and_upload_key_package()`
+
+Generate and upload a new key package, replacing the old one.
+
+**Returns:** `Result<(), ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:955`
+
+**Note:** Should be run after receiving welcome messages.
+
+```rust
+client.rotate_and_upload_key_package().await?;
+```
+
+## Database Management
+
+### `db()`
+
+Get a reference to the database query interface.
+
+**Returns:** `<Context::Db as XmtpDb>::DbQuery`
+
+**Source:** `crates/xmtp_mls/src/client.rs:286`
+
+```rust
+let conn = client.db();
+```
+
+### `release_db_connection()`
+
+Release the client's database connection pool.
+
+**Returns:** `Result<(), ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:511`
+
+```rust
+client.release_db_connection()?;
+```
+
+### `reconnect_db()`
+
+Reconnect to the database and restart workers.
+
+**Returns:** `Result<(), ClientError>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:255`
+
+```rust
+client.reconnect_db()?;
+```
+
+## Context Access
+
+### `identity_updates()`
+
+Get an IdentityUpdates service instance.
+
+**Returns:** `IdentityUpdates<&Context>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:197`
+
+```rust
+let identity_service = client.identity_updates();
+```
+
+### `mls_store()`
+
+Get an MlsStore instance.
+
+**Returns:** `MlsStore<Context>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:201`
+
+```rust
+let store = client.mls_store();
+```
+
+### `scw_verifier()`
+
+Get the smart contract signature verifier.
+
+**Returns:** `Arc<Box<dyn SmartContractSignatureVerifier>>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:205`
+
+```rust
+let verifier = client.scw_verifier();
+```
+
+### `version_info()`
+
+Get the client's version information.
+
+**Returns:** `&VersionInfo`
+
+**Source:** `crates/xmtp_mls/src/client.rs:209`
+
+```rust
+let version = client.version_info();
+```
+
+### `device_sync_client()`
+
+Get a device sync client instance.
+
+**Returns:** `DeviceSyncClient<Context>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:301`
+
+```rust
+let sync_client = client.device_sync_client();
+```
+
+### `device_sync_worker_enabled()`
+
+Check if device sync worker is enabled.
+
+**Returns:** `bool`
+
+**Source:** `crates/xmtp_mls/src/client.rs:297`
+
+```rust
+if client.device_sync_worker_enabled() {
+    println!("Device sync is active");
+}
+```
+
+## Statistics (when API client implements HasStats)
+
+### `api_stats()`
+
+Get API call statistics.
+
+**Returns:** `ApiStats`
+
+**Source:** `crates/xmtp_mls/src/client.rs:219`
+
+```rust
+let stats = client.api_stats();
+println!("Total API calls: {}", stats.total());
+```
+
+### `identity_api_stats()`
+
+Get identity API statistics.
+
+**Returns:** `IdentityStats`
+
+**Source:** `crates/xmtp_mls/src/client.rs:223`
+
+```rust
+let stats = client.identity_api_stats();
+```
+
+### `clear_stats()`
+
+Clear all API statistics.
+
+**Source:** `crates/xmtp_mls/src/client.rs:227`
+
+```rust
+client.clear_stats();
+```
+
+### `sync_metrics()`
+
+Get sync worker metrics.
+
+**Returns:** `Option<Arc<WorkerMetrics<SyncMetric>>>`
+
+**Source:** `crates/xmtp_mls/src/client.rs:266`
+
+```rust
+if let Some(metrics) = client.sync_metrics() {
+    println!("Worker metrics: {:?}", metrics);
+}
+```

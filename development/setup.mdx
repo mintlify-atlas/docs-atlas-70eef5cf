@@ -1,0 +1,159 @@
+---
+title: Development Setup
+description: Set up your development environment for LibXMTP
+---
+
+This guide will help you set up your development environment for contributing to LibXMTP.
+
+## Prerequisites
+
+Before you begin, ensure you have the following tools installed:
+
+<Steps>
+  <Step title="Install Rust">
+    Install [Rustup](https://rustup.rs/), the Rust toolchain installer:
+    
+    ```bash
+    curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+    ```
+  </Step>
+
+  <Step title="Install Docker">
+    Install [Docker Desktop](https://www.docker.com/get-started/) to run the XMTP node and other services.
+    
+    After installation, make sure Docker Desktop is running.
+  </Step>
+
+  <Step title="Install Foundry">
+    Install [Foundry](https://book.getfoundry.sh/getting-started/installation#using-foundryup) for Ethereum development tools:
+    
+    ```bash
+    curl -L https://foundry.paradigm.xyz | bash
+    foundryup
+    ```
+  </Step>
+</Steps>
+
+## Environment Setup Options
+
+You can set up your development environment using one of three methods:
+
+### Method 1: Standard Setup
+
+Start Docker Desktop, then install dependencies and start background services:
+
+```bash
+dev/up
+```
+
+This command:
+- Installs required dependencies
+- Creates and runs an XMTP node in Docker Desktop
+- Sets up other necessary services
+
+### Method 2: Nix Setup (Recommended)
+
+LibXMTP supports [Determinate Nix](https://docs.determinate.systems/) for reproducible development environments with pinned toolchains for Rust, Android, iOS, WebAssembly, and Node.js.
+
+<Steps>
+  <Step title="One-time setup">
+    Install Determinate Nix, direnv, and binary caches:
+    
+    ```bash
+    ./dev/nix-up
+    ```
+  </Step>
+
+  <Step title="Enter dev shell">
+    ```bash
+    nix develop
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  To temporarily disable/enable direnv:
+  
+  ```bash
+  dev/direnv-down  # Disable direnv auto-activation
+  dev/direnv-up    # Re-enable direnv
+  ```
+</Note>
+
+For more details, see the [Nix setup documentation](https://github.com/xmtp/libxmtp/blob/main/docs/nix-setup.md).
+
+### Method 3: Dev Containers
+
+For containerized development using Visual Studio Code:
+
+1. Install the Dev Containers extension
+2. Open the command palette and select "Reopen in Container"
+3. Select the Dockerfile as the target
+
+Or build the container manually:
+
+```bash
+docker build . -t libxmtp:1
+```
+
+## Managing Dependencies
+
+When adding Rust dependencies, you must regenerate the `workspace-hack` crate:
+
+```bash
+nix develop --command cargo hakari generate
+```
+
+<Info>
+  Optionally verify correctness:
+  
+  ```bash
+  nix develop --command cargo hakari verify
+  ```
+</Info>
+
+## Managing Backend Services
+
+### Start Services
+
+<CodeGroup>
+```bash Standard
+dev/up
+```
+
+```bash Backend with Validation Service
+just backend up
+```
+</CodeGroup>
+
+### Stop Services
+
+<CodeGroup>
+```bash Docker Only
+dev/docker/down
+```
+
+```bash Backend Services
+just backend down
+```
+</CodeGroup>
+
+## Using Just Command Runner
+
+LibXMTP uses [`just`](https://github.com/casey/just) as a command runner for common development tasks.
+
+List all available commands:
+
+```bash
+just
+```
+
+This will show all available recipes, including submodules for Android, iOS, Node.js, and WASM.
+
+## Next Steps
+
+Now that your environment is set up:
+
+- Learn about [Testing](/development/testing)
+- Explore [Benchmarks](/development/benchmarks)
+- Read the [Contributing Guidelines](/development/contributing)

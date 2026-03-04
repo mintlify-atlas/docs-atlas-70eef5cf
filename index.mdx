@@ -1,97 +1,339 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: LibXMTP Documentation
+mode: custom
 ---
 
-## Setting up
+<div className="relative w-full overflow-hidden bg-gradient-to-br from-[#0f1117] via-[#1a1d27] to-[#0f1117] dark:from-[#0f1117] dark:via-[#1a1d27] dark:to-[#0f1117]">
+  <div className="absolute inset-0 bg-[url('data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyI+PGRlZnM+PHBhdHRlcm4gaWQ9ImdyaWQiIHdpZHRoPSI2MCIgaGVpZ2h0PSI2MCIgcGF0dGVyblVuaXRzPSJ1c2VyU3BhY2VPblVzZSI+PHBhdGggZD0iTSAxMCAwIEwgMCAwIDAgMTAiIGZpbGw9Im5vbmUiIHN0cm9rZT0icmdiYSgxNDgsMjAzLDQsMC4wNSkiIHN0cm9rZS13aWR0aD0iMSIvPjwvcGF0dGVybj48L2RlZnM+PHJlY3Qgd2lkdGg9IjEwMCUiIGhlaWdodD0iMTAwJSIgZmlsbD0idXJsKCNncmlkKSIvPjwvc3ZnPg==')] opacity-40"></div>
+  
+  <div className="relative max-w-7xl mx-auto px-6 sm:px-8 py-20 lg:py-24">
+    <div className="grid lg:grid-cols-12 gap-12 items-center">
+      <div className="lg:col-span-7">
+        <div className="inline-flex items-center px-3 py-1 rounded-full border border-[#94cb04]/30 bg-[#94cb04]/10 mb-6">
+          <span className="text-sm font-medium text-[#94cb04]">Rust • Swift • Kotlin • Node.js • WASM</span>
+        </div>
+        
+        <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-white mb-6">
+          Build secure messaging with <span className="text-[#94cb04]">LibXMTP</span>
+        </h1>
+        
+        <p className="text-lg sm:text-xl text-gray-300 dark:text-gray-300 mb-8 max-w-2xl">
+          A shared library implementing the XMTP messaging protocol with MLS (Messaging Layer Security), multi-wallet identity, and cross-platform bindings for end-to-end encrypted group messaging.
+        </p>
+        
+        <div className="flex flex-wrap gap-4">
+          <a 
+            href="/quickstart" 
+            className="inline-flex items-center px-6 py-3 rounded-lg bg-[#94cb04] text-[#0f1117] font-semibold hover:bg-[#a8d91a] transition-colors no-underline"
+          >
+            Get Started
+            <svg className="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+            </svg>
+          </a>
+          <a 
+            href="/api/xmtp-mls" 
+            className="inline-flex items-center px-6 py-3 rounded-lg border border-white/30 bg-white/10 text-white font-semibold hover:bg-white/20 hover:border-[#94cb04]/50 transition-colors no-underline"
+          >
+            API Reference
+          </a>
+        </div>
+      </div>
+      
+      <div className="lg:col-span-5 hidden lg:block">
+        <div className="relative">
+          <div className="absolute inset-0 bg-[#94cb04] opacity-20 blur-3xl rounded-full"></div>
+          <img 
+            src="https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png" 
+            alt="XMTP Logo" 
+            className="relative w-full max-w-md mx-auto"
+            noZoom
+          />
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
 
-Get your documentation site up and running in minutes.
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="mb-12">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-3">
+      Quick start
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      Get up and running with LibXMTP in your application
+    </p>
+  </div>
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+  <Steps>
+    <Step title="Install the library">
+      Choose your platform and install LibXMTP using your package manager.
+      
+      <CodeGroup>
+      ```bash npm
+      npm install @xmtp/node-bindings
+      ```
+      
+      ```bash yarn
+      yarn add @xmtp/node-bindings
+      ```
+      
+      ```swift Swift Package Manager
+      dependencies: [
+        .package(url: "https://github.com/xmtp/libxmtp", from: "1.9.0")
+      ]
+      ```
+      
+      ```kotlin Gradle
+      dependencies {
+        implementation("org.xmtp:android:1.9.0")
+      }
+      ```
+      </CodeGroup>
+    </Step>
+    
+    <Step title="Create a client">
+      Initialize an XMTP client with your wallet or identity credentials.
+      
+      ```typescript
+      import { Client } from '@xmtp/node-bindings'
+      
+      // Create a client with wallet authentication
+      const client = await Client.create(
+        accountAddress,
+        {
+          env: 'production',
+          dbPath: './xmtp.db'
+        }
+      )
+      ```
+      
+      <Note>
+        The client manages your local database, identity state, and network connections. Each client is bound to a single Inbox ID and Installation ID.
+      </Note>
+    </Step>
+    
+    <Step title="Create or join a group">
+      Start a new conversation or sync existing groups from the network.
+      
+      ```typescript
+      // Create a new group
+      const group = await client.conversations.createGroup(
+        [member1Address, member2Address],
+        {
+          groupName: "Team Discussion",
+          groupImageUrl: "https://example.com/image.png"
+        }
+      )
+      
+      // Sync groups from the network
+      await client.conversations.sync()
+      const groups = await client.conversations.list()
+      ```
+    </Step>
+    
+    <Step title="Send and receive messages">
+      Exchange end-to-end encrypted messages with group members.
+      
+      ```typescript
+      // Send a message
+      await group.send("Hello, team!")
+      
+      // Stream incoming messages
+      const stream = await group.streamMessages()
+      for await (const message of stream) {
+        console.log(`${message.senderInboxId}: ${message.content}`)
+      }
+      ```
+      
+      <Accordion title="Example message output">
+        ```json
+        {
+          "id": "msg_abc123",
+          "senderInboxId": "0x1234...",
+          "content": "Hello, team!",
+          "sentAt": 1234567890,
+          "contentType": "text"
+        }
+        ```
+      </Accordion>
+    </Step>
+  </Steps>
+</div>
 
-## Make it yours
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="mb-12">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-3">
+      Explore by topic
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      Deep dive into LibXMTP's core features and capabilities
+    </p>
+  </div>
 
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
-  </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
-  </Card>
+  <CardGroup cols={3}>
     <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
+      title="Core concepts"
+      icon="book-open"
+      href="/concepts/architecture"
+    >
+      Learn about MLS protocol, identity system, and client architecture
+    </Card>
+    <Card
+      title="Language bindings"
+      icon="code"
+      href="/bindings/overview"
+    >
+      Platform-specific guides for Node.js, Swift, Kotlin, and WASM
+    </Card>
+    <Card
+      title="Security"
+      icon="shield-halved"
+      href="/security/overview"
+    >
+      Credential validation, key rotation, and revocation mechanisms
+    </Card>
+    <Card
+      title="Groups & conversations"
+      icon="users"
+      href="/concepts/groups-and-conversations"
+    >
+      Create groups, manage permissions, and configure policies
+    </Card>
+    <Card
+      title="Message handling"
+      icon="message"
+      href="/guides/sending-messages"
+    >
+      Send messages, handle content types, and stream updates
+    </Card>
+    <Card
+      title="Development"
+      icon="hammer"
+      href="/development/setup"
+    >
+      Set up your dev environment, run tests, and contribute
+    </Card>
+  </CardGroup>
+</div>
 
-## Create beautiful pages
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="mb-12">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-3">
+      Key features
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      What makes LibXMTP powerful for secure messaging
+    </p>
+  </div>
 
-Everything you need to create world-class documentation.
+  <div className="grid md:grid-cols-2 gap-6">
+    <div className="p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#94cb04] dark:hover:border-[#94cb04] transition-colors">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[#94cb04]/10">
+          <svg className="w-5 h-5 text-[#94cb04]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">MLS Protocol</h3>
+      </div>
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        Built on Messaging Layer Security (MLS) using OpenMLS for cryptographic operations, providing forward secrecy and post-compromise security.
+      </p>
+    </div>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+    <div className="p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#94cb04] dark:hover:border-[#94cb04] transition-colors">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[#94cb04]/10">
+          <svg className="w-5 h-5 text-[#94cb04]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0zm6 3a2 2 0 11-4 0 2 2 0 014 0zM7 10a2 2 0 11-4 0 2 2 0 014 0z" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Multi-wallet identity</h3>
+      </div>
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        Link multiple Ethereum wallets (EOA and smart contract) to a single inbox with support for association and revocation.
+      </p>
+    </div>
 
-## Need inspiration?
+    <div className="p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#94cb04] dark:hover:border-[#94cb04] transition-colors">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[#94cb04]/10">
+          <svg className="w-5 h-5 text-[#94cb04]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Cross-platform bindings</h3>
+      </div>
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        Use LibXMTP from Node.js (NAPI), Swift/iOS (Uniffi), Kotlin/Android (Uniffi), or WebAssembly with consistent APIs.
+      </p>
+    </div>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+    <div className="p-6 rounded-2xl border border-gray-200 dark:border-[#27272a] bg-white dark:bg-[#1a1d27] hover:border-[#94cb04] dark:hover:border-[#94cb04] transition-colors">
+      <div className="flex items-center gap-3 mb-3">
+        <div className="flex items-center justify-center w-10 h-10 rounded-lg bg-[#94cb04]/10">
+          <svg className="w-5 h-5 text-[#94cb04]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z" />
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+          </svg>
+        </div>
+        <h3 className="text-lg font-semibold text-gray-900 dark:text-white">Configurable permissions</h3>
+      </div>
+      <p className="text-sm text-gray-600 dark:text-gray-400">
+        Fine-grained group policies control who can add/remove members, update metadata, and manage admin roles.
+      </p>
+    </div>
+  </div>
+</div>
+
+<div className="mt-16 mb-16 max-w-5xl mx-auto px-6">
+  <div className="mb-12">
+    <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-3">
+      Resources
+    </h2>
+    <p className="text-base text-gray-600 dark:text-gray-400">
+      Additional materials to help you build with LibXMTP
+    </p>
+  </div>
+
+  <CardGroup cols={2}>
+    <Card
+      title="GitHub repository"
+      icon="github"
+      href="https://github.com/xmtp/libxmtp"
+    >
+      View source code, report issues, and contribute to the project
+    </Card>
+    <Card
+      title="XMTP documentation"
+      icon="book"
+      href="https://docs.xmtp.org"
+    >
+      Learn about the broader XMTP ecosystem and protocol
+    </Card>
+  </CardGroup>
+</div>
+
+<div className="mt-20 mb-16 max-w-5xl mx-auto px-6">
+  <div className="relative overflow-hidden rounded-2xl border border-gray-200 dark:border-[#27272a] bg-gradient-to-br from-[#94cb04]/5 to-transparent p-8 sm:p-12">
+    <div className="absolute top-0 right-0 -mt-12 -mr-12 w-64 h-64 bg-[#94cb04] opacity-10 blur-3xl rounded-full"></div>
+    <div className="relative">
+      <h2 className="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-white mb-4">
+        Ready to build secure messaging?
+      </h2>
+      <p className="text-base text-gray-600 dark:text-gray-400 mb-6 max-w-2xl">
+        Start integrating LibXMTP into your application today. Follow our quickstart guide to have encrypted group messaging running in minutes.
+      </p>
+      <a 
+        href="/quickstart" 
+        className="inline-flex items-center px-6 py-3 rounded-lg bg-[#94cb04] text-[#0f1117] font-semibold hover:bg-[#a8d91a] transition-colors no-underline"
+      >
+        Get Started Now
+        <svg className="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+        </svg>
+      </a>
+    </div>
+  </div>
+</div>

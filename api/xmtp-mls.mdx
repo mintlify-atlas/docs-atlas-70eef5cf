@@ -1,0 +1,254 @@
+---
+title: "xmtp_mls"
+description: "XMTP core MLS Implementation on top of openmls"
+---
+
+## Overview
+
+The `xmtp_mls` crate is the core implementation of XMTP's Messaging Layer Security (MLS) protocol. It provides the primary client interface for creating and managing encrypted group conversations, handling identity management, and syncing messages across devices.
+
+## Installation
+
+```toml
+[dependencies]
+xmtp_mls = "*"
+```
+
+## Key Exports
+
+The crate exports the following modules and types from `lib.rs`:
+
+<ParamField path="Client" type="struct">
+  The main client interface for XMTP MLS operations. Parameterized by context type to allow different API/DB combinations.
+</ParamField>
+
+<ParamField path="Network" type="enum">
+  Represents the network the client connects to:
+  - `Local(&'static str)` - Local development network
+  - `Dev` - Development network (default)
+  - `Prod` - Production network
+</ParamField>
+
+<ParamField path="GroupCommitLock" type="struct">
+  A manager for group-specific semaphores to prevent concurrent modifications to the same group.
+</ParamField>
+
+<ParamField path="MlsGroupGuard" type="struct">
+  A guard that releases the group semaphore when dropped, ensuring proper lock cleanup.
+</ParamField>
+
+## Core Modules
+
+### builder
+
+Provides `ClientBuilder` for fluent construction of clients with identity, API, and storage configuration.
+
+### client
+
+Contains the main `Client<Context>` type with methods for:
+- Creating and managing groups
+- Sending and receiving messages
+- Identity management
+- Device synchronization
+
+### context
+
+Defines `XmtpMlsLocalContext` which centralizes dependencies:
+- API client
+- Storage/database
+- Identity manager
+- Group locks
+- Event streams
+
+### groups
+
+Group conversation management including:
+- Creating groups
+- Adding/removing members
+- Sending messages
+- Group permissions and metadata
+- DM (direct message) support
+
+### identity
+
+Identity and authentication:
+- Installation identities
+- Key package management
+- Credential verification
+
+### messages
+
+Message handling:
+- Encoding/decoding messages
+- Content types
+- Message delivery status
+- Message enrichment
+
+### subscriptions
+
+Real-time event subscriptions:
+- New messages
+- Group updates
+- Identity changes
+
+## Main Types and Traits
+
+<ResponseField name="Client<Context>" type="struct">
+  Generic client parameterized by context type. Provides all MLS operations.
+  
+  **Key Methods:**
+  - `create_group()` - Create a new group conversation
+  - `create_dm()` - Create a direct message conversation
+  - `group()` - Get an existing group
+  - `conversations()` - List all conversations
+  - `sync()` - Synchronize with network
+</ResponseField>
+
+<ResponseField name="MlsGroup" type="struct">
+  Represents a group conversation.
+  
+  **Key Methods:**
+  - `send_message()` - Send a message to the group
+  - `add_members()` - Add members to the group
+  - `remove_members()` - Remove members from the group
+  - `messages()` - Retrieve messages
+  - `sync()` - Sync group state
+</ResponseField>
+
+<ResponseField name="ClientBuilder" type="struct">
+  Builder pattern for constructing clients.
+  
+  **Methods:**
+  - `api_client()` - Set API client
+  - `identity()` - Set identity
+  - `store()` - Set storage
+  - `build()` - Construct the client
+</ResponseField>
+
+## Usage Examples
+
+### Creating a Client
+
+```rust
+use xmtp_mls::{Client, Network};
+use xmtp_mls::builder::ClientBuilder;
+
+// Create a new client with builder pattern
+let client = ClientBuilder::new()
+    .api_client(api_client)
+    .identity(wallet)
+    .store(db_connection)
+    .build()
+    .await?;
+```
+
+### Creating a Group
+
+```rust
+// Create a new group conversation
+let group = client
+    .create_group(
+        None, // no permissions override
+        GroupMetadataOptions::default(),
+    )
+    .await?;
+
+// Add members to the group
+group.add_members(vec!["inbox_id_1", "inbox_id_2"]).await?;
+```
+
+### Sending Messages
+
+```rust
+// Send a text message
+let message_id = group
+    .send_message(b"Hello, world!")
+    .await?;
+
+// Send with options
+group
+    .send_message_with_opts(
+        b"Important message",
+        SendMessageOpts::default()
+    )
+    .await?;
+```
+
+### Receiving Messages
+
+```rust
+// Get all messages
+let messages = group.messages(None).await?;
+
+// Process messages
+for message in messages {
+    println!("From: {}", message.sender_inbox_id);
+    println!("Content: {:?}", message.decrypted_message_bytes);
+}
+```
+
+### Subscribing to Events
+
+```rust
+use tokio_stream::StreamExt;
+
+// Subscribe to new messages
+let mut stream = client.stream_messages().await?;
+
+while let Some(message) = stream.next().await {
+    println!("New message: {:?}", message);
+}
+```
+
+## Features
+
+<ParamField path="test-utils" type="feature">
+  Utilities for testing, including mock implementations and test helpers.
+</ParamField>
+
+<ParamField path="bench" type="feature">
+  Benchmarking utilities and performance testing tools.
+</ParamField>
+
+<ParamField path="d14n" type="feature">
+  Decentralized API support.
+</ParamField>
+
+<ParamField path="v3" type="feature">
+  Version 3 protocol support.
+</ParamField>
+
+<ParamField path="dev" type="feature">
+  Development configuration and utilities.
+</ParamField>
+
+## Error Handling
+
+The crate uses structured error types:
+
+```rust
+use xmtp_mls::client::ClientError;
+
+match result {
+    Ok(value) => { /* success */ }
+    Err(ClientError::Storage(e)) => { /* handle storage error */ }
+    Err(ClientError::Api(e)) => { /* handle API error */ }
+    Err(e) => { /* handle other errors */ }
+}
+```
+
+## Platform Support
+
+- Native (Linux, macOS, Windows)
+- WebAssembly (WASM)
+- iOS (via FFI bindings)
+- Android (via FFI bindings)
+
+## Dependencies
+
+Key dependencies include:
+- `openmls` - MLS protocol implementation
+- `xmtp_db` - Storage layer
+- `xmtp_id` - Identity management
+- `xmtp_proto` - Protocol definitions
+- `xmtp_cryptography` - Cryptographic primitives

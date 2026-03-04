@@ -1,0 +1,389 @@
+---
+title: Revocation
+description: How to revoke installations and wallets using RevokeAssociation in LibXMTP
+---
+
+LibXMTP allows installations and wallets to be revoked from an inbox using the `RevokeAssociation` mechanism defined in [XIP-46](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-46-multi-wallet-identity.md).
+
+## RevokeAssociation Action
+
+Revocation is performed by publishing a `RevokeAssociation` identity update to the network.
+
+### Structure
+
+```rust
+pub struct RevokeAssociation {
+    pub member_to_revoke: MemberIdentifier,
+    pub recovery_identifier_signature: VerifiedSignature,
+}
+```
+
+**Fields:**
+
+- `member_to_revoke` - The installation key or wallet address being revoked
+- `recovery_identifier_signature` - Signature from the recovery identifier (wallet) authorizing the revocation
+
+**Location:** `crates/xmtp_id/src/associations/association_log.rs:220-227`
+
+### What Can Be Revoked?
+
+Two types of members can be revoked:
+
+1. **Installation keys** - Removes an installation's ability to act on behalf of the inbox
+2. **Wallet addresses** - Disassociates a wallet from the inbox
+
+```rust
+pub enum MemberIdentifier {
+    Installation(ident::Installation),
+    Ethereum(ident::Ethereum),
+    Passkey(ident::Passkey),
+}
+```
+
+## Creating a Revocation
+
+### Building the Revocation Action
+
+```rust
+use xmtp_id::associations::{
+    builder::SignatureRequest,
+    unsigned_actions::{UnsignedAction, UnsignedRevokeAssociation},
+};
+
+// Create unsigned revocation
+let unsigned_revocation = UnsignedRevokeAssociation {
+    member_to_revoke: installation_id.into(),
+};
+
+// Create signature request
+let signature_request = SignatureRequest::new(
+    inbox_id.clone(),
+    UnsignedAction::RevokeAssociation(unsigned_revocation),
+);
+
+// Get the text that needs to be signed
+let signature_text = signature_request.signature_text();
+```
+
+**Location:** `crates/xmtp_id/src/associations/unsigned_actions.rs:43-47`
+
+### Signature Requirements
+
+<Warning>
+Revocations **must** be signed by the recovery identifier (typically the wallet that created the inbox).
+</Warning>
+
+The recovery identifier is set during inbox creation and can be updated with `ChangeRecoveryAddress` actions.
+
+**Signature process:**
+
+```rust
+// 1. Get wallet signature on the revocation text
+let wallet_signature = wallet.sign_message(&signature_text).await?;
+
+// 2. Add signature to the action
+let signed_action = signature_request
+    .add_signature(wallet_signature, &scw_verifier)
+    .await?;
+
+// 3. Create identity update
+let identity_update = IdentityUpdate {
+    client_timestamp_ns: now_ns(),
+    inbox_id: inbox_id.clone(),
+    actions: vec![signed_action],
+};
+
+// 4. Publish to network
+api_client.publish_identity_update(identity_update).await?;
+```
+
+**Location:** `crates/xmtp_id/src/associations/builder.rs:360-371`
+
+## Revocation Effects
+
+### Immediate Effects
+
+Once published to the network:
+
+1. The revoked member is removed from the `AssociationState`
+2. The member can no longer sign new identity updates
+3. The member cannot be used to validate new associations
+
+```rust
+impl IdentityAction for RevokeAssociation {
+    fn update_state(
+        &self,
+        existing_state: Option<AssociationState>,
+    ) -> Result<AssociationState, AssociationError> {
+        let state = existing_state.ok_or(AssociationError::NotCreated)?;
+        
+        // Remove the member
+        Ok(state.remove(&self.member_to_revoke))
+    }
+}
+```
+
+**Location:** `crates/xmtp_id/src/associations/association_log.rs:227`
+
+### Group Membership Effects
+
+<Warning>
+Revoking an installation does **not** immediately remove it from groups it is already a member of.
+</Warning>
+
+Instead:
+
+1. Any group member can update the group membership to the latest `sequence_id`
+2. This update removes the revoked installation from the group
+3. The protocol makes **no guarantees** about timeliness of removal
+
+**Automatic removal:**
+
+Clients periodically check for revocations during their `sync` process:
+
+```rust
+// During group sync
+let current_state = get_latest_association_state(inbox_id).await?;
+let diff = old_state.diff(&current_state);
+
+if !diff.removed_installations().is_empty() {
+    // Update group membership to remove revoked installations
+    group.update_installations(current_state).await?;
+}
+```
+
+This typically happens quickly, but the protocol provides no strict timing guarantees.
+
+### What Revocation Does NOT Do
+
+<Note>
+XMTP does **not** detect or automatically remove inactive clients. Inactive client detection must be handled at the application layer, which should then trigger explicit removal.
+</Note>
+
+## Revocation Examples
+
+### Revoking an Installation
+
+```rust
+// Scenario: User lost their phone and wants to revoke that installation
+
+let lost_installation_id = vec![/* installation public key */];
+
+let revocation = client
+    .revoke_installation(lost_installation_id)
+    .await?;
+
+println!("Installation revoked successfully");
+```
+
+### Revoking a Wallet
+
+```rust
+// Scenario: User wants to disassociate a wallet from their inbox
+
+let wallet_address = "0x1234...";
+
+let revocation = client
+    .revoke_wallet(wallet_address)
+    .await?;
+
+println!("Wallet revoked successfully");
+```
+
+### Self-Revocation Protection
+
+<Accordion title="Can an installation revoke itself?">
+No. Revocations **must** be signed by the recovery identifier (wallet), not by the installation being revoked.
+
+This prevents compromised installations from revoking themselves to cover their tracks.
+</Accordion>
+
+## State Management
+
+### AssociationState Tracking
+
+Revocations modify the `AssociationState` by removing members:
+
+```rust
+pub struct AssociationState {
+    pub(crate) inbox_id: String,
+    pub(crate) members: HashMap<MemberIdentifier, Member>,
+    pub(crate) recovery_identifier: Identifier,
+    pub(crate) seen_signatures: HashSet<Vec<u8>>,
+}
+
+impl AssociationState {
+    pub fn remove(&self, identifier: &MemberIdentifier) -> Self {
+        let mut new_state = self.clone();
+        let _ = new_state.members.remove(identifier);
+        new_state
+    }
+}
+```
+
+**Location:** `crates/xmtp_id/src/associations/state.rs:123-128`
+
+### Computing State Diffs
+
+To detect revocations, compute the diff between states:
+
+```rust
+pub struct AssociationStateDiff {
+    pub new_members: Vec<MemberIdentifier>,
+    pub removed_members: Vec<MemberIdentifier>,
+}
+
+let diff = old_state.diff(&new_state);
+
+// Check for revoked installations
+for removed in diff.removed_installations() {
+    println!("Installation {} was revoked", hex::encode(removed));
+}
+```
+
+**Helper methods:**
+
+```rust
+impl AssociationStateDiff {
+    pub fn removed_installations(&self) -> Vec<Vec<u8>> {
+        self.removed_members
+            .iter()
+            .filter_map(|member| match member {
+                MemberIdentifier::Installation(key) => Some(key.0.clone()),
+                _ => None,
+            })
+            .collect()
+    }
+}
+```
+
+**Location:** `crates/xmtp_id/src/associations/state.rs:45-54`
+
+## Revocation and Group Updates
+
+### GroupMembership Extension
+
+Each MLS group maintains a `GroupMembership` extension:
+
+```rust
+pub struct GroupMembership {
+    // Maps inbox_id -> sequence_id
+    members: HashMap<String, u64>,
+}
+```
+
+The `sequence_id` corresponds to the state of that inbox at a point in time.
+
+### Updating After Revocation
+
+**Process:**
+
+1. Fetch latest `sequence_id` for affected inbox
+2. Create commit that updates `GroupMembership` to new `sequence_id`
+3. Compute expected installation list from new state
+4. Validate that MLS group members match expected installations
+
+```rust
+// Pseudocode for group membership update
+let latest_state = get_association_state(inbox_id, latest_sequence_id)?;
+let expected_installations = latest_state.installation_ids();
+
+// Create commit updating sequence_id
+let commit = group.update_member_sequence_id(
+    inbox_id,
+    latest_sequence_id,
+)?;
+
+// Commit validation ensures MLS members match expected_installations
+```
+
+**Location:** `crates/xmtp_mls/README.md:72-77`
+
+## Recovery Identifier Management
+
+### What is the Recovery Identifier?
+
+The recovery identifier is the wallet address (or other identifier) authorized to:
+
+- Revoke installations and wallets
+- Change the recovery identifier itself
+- Recover access to the inbox
+
+**Set during inbox creation:**
+
+```rust
+pub struct CreateInbox {
+    pub nonce: u64,
+    pub account_identifier: Identifier,
+    pub initial_identifier_signature: VerifiedSignature,
+}
+
+// account_identifier becomes the recovery_identifier
+```
+
+### Changing the Recovery Identifier
+
+While not a revocation per se, changing the recovery identifier affects who can perform revocations:
+
+```rust
+let change_recovery = UnsignedAction::ChangeRecoveryAddress {
+    new_recovery_identifier: new_wallet_identifier,
+};
+
+// Must be signed by current recovery identifier
+let signature_request = SignatureRequest::new(inbox_id, change_recovery);
+```
+
+<Warning>
+Changing the recovery identifier is a sensitive operation. If the current recovery identifier is compromised, the attacker could change it to lock out the legitimate owner.
+</Warning>
+
+## Backend Trust Considerations
+
+<Warning>
+The XMTP backend can hide revocations by not returning them in identity update queries.
+
+This is an inherent trust assumption in the current architecture. Clients cannot independently verify that they have received all revocations.
+</Warning>
+
+**Mitigation:**
+
+Clients should:
+
+1. Query identity updates from multiple sources if available
+2. Implement application-level revocation verification
+3. Monitor for unexpected installations in groups
+
+## Testing Revocation
+
+### Example Test
+
+```rust
+#[xmtp_common::test(unwrap_try = true)]
+async fn test_revoke_installation() {
+    let wallet = generate_local_wallet();
+    let client = ClientBuilder::new_test_client(&wallet).await;
+    
+    // Create second installation
+    let installation_2 = client.add_installation().await?;
+    
+    // Revoke it
+    let revoke_action = Action::RevokeAssociation(RevokeAssociation {
+        member_to_revoke: installation_2.into(),
+    });
+    
+    client.publish_identity_update(revoke_action).await?;
+    
+    // Verify state
+    let state = client.get_association_state().await?;
+    assert!(!state.installation_ids().contains(&installation_2));
+}
+```
+
+**Location:** `crates/xmtp_id/src/associations/mod.rs:524-548` (similar test)
+
+## Related Documentation
+
+- [Security Overview](/security/overview) - Overall security architecture
+- [Credential Validation](/security/credential-validation) - How credentials are validated
+- [Key Rotation](/security/key-rotation) - Key package lifecycle

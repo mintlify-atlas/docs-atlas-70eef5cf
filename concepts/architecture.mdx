@@ -1,0 +1,261 @@
+---
+title: Architecture
+description: Understanding LibXMTP's layered architecture and core design patterns
+---
+
+LibXMTP is a shared library implementing the XMTP messaging protocol using MLS (Messaging Layer Security). It's designed as a Rust workspace with bindings for multiple platforms.
+
+## Architectural Overview
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                      LANGUAGE BINDINGS                          │
+│  bindings/mobile (uniffi) │ bindings/wasm │ bindings/node (napi)│
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                ┌──────────────▼──────────────┐
+                │      xmtp_mls (Client)      │
+                │  Groups, messages, sync     │
+                └──────────────┬──────────────┘
+        ┌──────────┬───────────┼───────────┬──────────┐
+        ▼          ▼           ▼           ▼          ▼
+   xmtp_api   xmtp_db     xmtp_id    xmtp_proto  xmtp_cryptography
+   (traits)   (storage)   (identity) (protobuf)  (crypto ops)
+        │
+        ├─► xmtp_api_grpc (gRPC implementation)
+        └─► xmtp_api_d14n (decentralized API)
+```
+
+## Core Layers
+
+### Language Bindings
+
+LibXMTP provides native bindings for multiple platforms:
+
+- **Mobile** (`bindings/mobile`): Uses UniFFI to generate Kotlin (Android) and Swift (iOS) bindings
+- **WebAssembly** (`bindings/wasm`): Browser and Web Worker support
+- **Node.js** (`bindings/node`): Uses NAPI for native Node.js modules
+
+All bindings interact with the same Rust core, ensuring consistent behavior across platforms.
+
+### Core Client Layer (xmtp_mls)
+
+The `xmtp_mls` crate contains the main application logic:
+
+- Group creation and management
+- Message sending and receiving
+- Synchronization with the network
+- Intent processing and publishing
+- Member management
+
+See [Client Lifecycle](/concepts/client-lifecycle) for details on client initialization and usage.
+
+### Foundation Crates
+
+#### xmtp_api
+
+Defines the `XmtpApi` trait for network communication. Implementations include:
+
+- `xmtp_api_grpc`: gRPC-based API client for centralized infrastructure
+- `xmtp_api_d14n`: Decentralized API implementation
+
+The trait abstraction allows swapping network implementations without changing core logic.
+
+#### xmtp_db
+
+Provides encrypted SQLite storage using Diesel ORM:
+
+- Group metadata and membership
+- Message storage with delivery status
+- Identity updates and associations
+- Key packages and cryptographic material
+
+Supports optional encryption via SQLCipher for enhanced security.
+
+#### xmtp_id
+
+Implements the identity system based on [XIP-46](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-46-multi-wallet-identity.md):
+
+- Inbox ID management
+- Wallet and installation associations
+- Signature verification (EOA, smart contracts, legacy V2)
+- Association state tracking
+
+See [Identity System](/concepts/identity-system) for comprehensive details.
+
+#### xmtp_proto
+
+Protocol Buffer definitions for:
+
+- API messages (group operations, welcomes, key packages)
+- Identity updates and associations
+- Content types and encoded messages
+
+#### xmtp_cryptography
+
+Cryptographic primitives and operations:
+
+- Key generation and management
+- Signature creation and verification
+- ECDSA recovery for wallet signatures
+
+## Key Design Patterns
+
+### Generic Client with Context
+
+The `Client<Context>` type is parameterized by context, enabling different configurations:
+
+```rust
+pub struct Client<Context> {
+    pub context: Context,
+    pub installation_id: InstallationId,
+    pub(crate) local_events: broadcast::Sender<LocalEvents>,
+    pub(crate) workers: Arc<WorkerRunner>,
+}
+```
+
+This pattern allows:
+- Testing with mock implementations
+- Different storage backends
+- Alternative API clients
+- Platform-specific optimizations
+
+### Shared Context (XmtpMlsLocalContext)
+
+The `XmtpMlsLocalContext` centralizes dependencies:
+
+```rust
+pub struct XmtpMlsLocalContext<ApiClient, Db, S> {
+    pub identity: Identity,
+    pub mls_storage: S,
+    pub store: Db,
+    pub api_client: ApiClientWrapper<ApiClient>,
+    pub scw_verifier: Arc<Box<dyn SmartContractSignatureVerifier>>,
+    pub mutexes: MutexRegistry,
+    pub mls_commit_lock: Arc<GroupCommitLock>,
+    // ... event channels and workers
+}
+```
+
+This context is cloned (cheaply via Arc) when creating groups or performing operations.
+
+### Builder Pattern for Client Construction
+
+The `ClientBuilder` provides fluent API for configuration:
+
+```rust
+let client = Client::builder(IdentityStrategy::CreateIfNotFound)
+    .api_clients(api_client, sync_api_client)
+    .store(encrypted_store)
+    .default_mls_store()?
+    .with_scw_verifier(verifier)
+    .build()
+    .await?;
+```
+
+See [Client Lifecycle](/concepts/client-lifecycle) for initialization details.
+
+### Trait Abstractions
+
+Core traits enable pluggable implementations:
+
+- `XmtpApi`: Network communication
+- `XmtpDb`: Database operations  
+- `XmtpMlsStorageProvider`: MLS key storage
+- `SmartContractSignatureVerifier`: Smart contract wallet verification
+- `InboxOwner`: Identity operations (for testing)
+
+### Platform-Specific Code
+
+Macros handle platform differences:
+
+```rust
+if_native! {
+    // Native-only code (file system, native crypto)
+}
+
+if_wasm! {
+    // WebAssembly-specific code (browser APIs)
+}
+```
+
+## Background Workers
+
+The `WorkerRunner` manages background tasks:
+
+- **SyncWorker**: Polls network for new messages and welcomes
+- **KeyPackagesCleanerWorker**: Rotates and cleans up key packages
+- **DisappearingMessagesWorker**: Handles ephemeral message lifecycle
+- **PendingSelfRemoveWorker**: Processes pending member removals
+- **CommitLogWorker**: Publishes commit logs (when enabled)
+- **TaskWorker**: Executes queued background tasks
+
+Workers can be disabled for testing or manual control:
+
+```rust
+ClientBuilder::new(strategy)
+    .with_disable_workers(true)
+    .build()
+    .await?;
+```
+
+## Storage Architecture
+
+LibXMTP uses a dual-storage approach:
+
+### Application Database (xmtp_db)
+
+- Group metadata and conversation list
+- Decrypted message content
+- Identity updates and associations
+- Consent records and preferences
+
+### MLS Storage (SqlKeyStore)
+
+- OpenMLS group state and epochs
+- Cryptographic key material
+- Key packages (HPKE init keys)
+- Ratchet tree state
+
+This separation keeps MLS internals isolated while making application data easily queryable.
+
+## Error Handling
+
+LibXMTP uses structured error types with error codes:
+
+```rust
+#[derive(Debug, Error, ErrorCode)]
+pub enum ClientError {
+    #[error("storage error: {0}")]
+    Storage(#[from] StorageError),
+    
+    #[error("API error: {0}")]
+    Api(#[from] xmtp_api::ApiError),
+    
+    #[error("identity error: {0}")]
+    Identity(#[from] IdentityError),
+    // ...
+}
+```
+
+Errors implement `RetryableError` to indicate transient failures that can be retried.
+
+## Testing Infrastructure
+
+The architecture supports comprehensive testing:
+
+- **Mock implementations**: `MockApi`, `MockScwVerifier` for unit tests
+- **Test utilities**: `tester!` macro creates test clients with wallets
+- **Cross-platform tests**: `#[xmtp_common::test]` runs on native and WASM
+- **Wallet utilities**: `WalletTestExt` trait for test wallet operations
+
+<Note>
+All tests use the `#[xmtp_common::test(unwrap_try = true)]` attribute instead of `#[test]` to ensure cross-platform compatibility.
+</Note>
+
+## Related Concepts
+
+- [MLS Protocol](/concepts/mls-protocol) - Detailed MLS implementation
+- [Identity System](/concepts/identity-system) - Inbox and association management  
+- [Client Lifecycle](/concepts/client-lifecycle) - Initialization and registration
+- [Groups and Conversations](/concepts/groups-and-conversations) - Group operations

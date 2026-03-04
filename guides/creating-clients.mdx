@@ -1,0 +1,294 @@
+---
+title: Creating Clients
+description: Learn how to create and initialize LibXMTP clients using ClientBuilder
+---
+
+The `Client` is the primary interface for interacting with the XMTP network. This guide shows you how to create and configure clients using the `ClientBuilder` pattern.
+
+## Overview
+
+Each client instance is bound to:
+- A single **Inbox ID** (user identity)
+- A single **Installation ID** (device/app instance)
+- A local SQLite database for storage
+
+If you need to operate with a different Inbox ID or Installation ID, create a new client with a new database.
+
+## Basic Client Creation
+
+<Steps>
+
+### Create the ClientBuilder
+
+Start by creating a builder with an identity strategy:
+
+```rust
+use xmtp_mls::Client;
+use xmtp_mls::identity::IdentityStrategy;
+
+let client_builder = Client::builder(IdentityStrategy::CreateIfNotFound(
+    account_address,
+    nonce,
+    legacy_signed_private_key,  // Optional: for V2 migration
+));
+```
+
+<Note>
+The `IdentityStrategy` determines how the client handles identity:
+- `CreateIfNotFound` - Creates a new inbox if one doesn't exist
+- `CachedOnly` - Uses an existing cached identity
+- `ExternalIdentity` - Uses externally provided identity
+</Note>
+
+### Configure API and Storage
+
+Add API clients and database storage:
+
+```rust
+let client = client_builder
+    .api_clients(api_client, sync_api_client)
+    .store(db)
+    .default_mls_store()?  // Use default SQLite MLS storage
+    .with_remote_verifier()?
+    .build()
+    .await?;
+```
+
+### Register the Identity
+
+After building the client, register it with the network:
+
+```rust
+// Create a signature request
+let signature_request = client.identity().signature_request();
+
+// Sign with your wallet
+let signature = wallet.sign_message(signature_request.signature_text()).await?;
+signature_request.add_signature(signature);
+
+// Register on the network
+client.register_identity(signature_request).await?;
+```
+
+</Steps>
+
+## ClientBuilder Configuration
+
+The `ClientBuilder` supports extensive configuration:
+
+### Storage Configuration
+
+```rust
+use xmtp_db::EncryptedMessageStore;
+
+// With custom database
+let db = EncryptedMessageStore::new(
+    StorageOption::Persistent(db_path),
+    Some(encryption_key),  // Optional encryption
+)?;
+
+client_builder.store(db)
+```
+
+See [Database Encryption](/guides/database-encryption) for encryption details.
+
+### Device Sync Configuration
+
+```rust
+use xmtp_mls::builder::DeviceSyncMode;
+
+// Enable device sync (default)
+client_builder.device_sync_worker_mode(DeviceSyncMode::Enabled)
+
+// Disable device sync
+client_builder.device_sync_worker_mode(DeviceSyncMode::Disabled)
+```
+
+### Version Information
+
+```rust
+use xmtp_mls::utils::VersionInfo;
+
+client_builder.version(VersionInfo {
+    version: "1.0.0".to_string(),
+})
+```
+
+### Offline Mode
+
+```rust
+// Build client offline (no network calls)
+let client = client_builder
+    .with_allow_offline(Some(true))
+    .build_offline()?;  // Synchronous build
+```
+
+### Smart Contract Verifier
+
+```rust
+use xmtp_id::scw_verifier::HttpSmartContractWalletVerifier;
+
+// Custom verifier for smart contract wallets
+let verifier = HttpSmartContractWalletVerifier::new(rpc_urls);
+client_builder.with_scw_verifier(verifier)
+```
+
+## Client Properties
+
+<CodeGroup>
+
+```rust Rust
+// Get inbox and installation IDs
+let inbox_id = client.inbox_id();
+let installation_id = client.installation_public_key();
+
+// Check registration status
+if client.identity().is_ready() {
+    println!("Client is registered and ready");
+}
+
+// Get database connection
+let db = client.db();
+```
+
+```typescript TypeScript (Node.js)
+import { createClient } from '@xmtp/node-sdk'
+
+const client = await createClient(user, encryptionKey)
+
+// Get client info
+const inboxId = client.inboxId()
+const installationId = client.installationId()
+const isRegistered = client.isRegistered()
+```
+
+</CodeGroup>
+
+## Identity States
+
+A client's identity can be in one of three states:
+
+1. **Not Registered** - Installation keys generated but not associated with an inbox
+2. **Registered but Not Ready** - Identity update created but not published to network
+3. **Ready** - Fully registered and operational
+
+```rust
+// Check if identity is ready
+if !client.identity().is_ready() {
+    // Must call register_identity() first
+    return Err(IdentityError::UninitializedIdentity);
+}
+```
+
+<Warning>
+Operations like creating groups or sending messages will fail if the identity is not ready. Always call `register_identity()` before performing group operations.
+</Warning>
+
+## Multi-Device Support
+
+Multiple installations can share the same inbox:
+
+```rust
+// Create second installation for same inbox
+let client2 = Client::builder(IdentityStrategy::CreateIfNotFound(
+    same_account_address,
+    nonce,
+    None,
+))
+.api_clients(api_client, sync_api_client)
+.store(different_db_path)  // Different database!
+.default_mls_store()?
+.with_remote_verifier()?
+.build()
+.await?;
+
+// Associate with existing inbox
+let signature_request = client2.add_identifier_signature_request();
+// ... sign and apply
+```
+
+## Best Practices
+
+<Steps>
+
+### Use Persistent Storage
+
+Always use persistent databases in production:
+
+```rust
+let db = EncryptedMessageStore::new(
+    StorageOption::Persistent("/path/to/db"),
+    Some(encryption_key),
+)?;
+```
+
+### Enable Database Encryption
+
+Protect user data with SQLCipher encryption:
+
+```rust
+let encryption_key = generate_secure_key();  // 32 bytes
+let db = EncryptedMessageStore::new(
+    StorageOption::Persistent(path),
+    Some(encryption_key),
+)?;
+```
+
+### Handle Connection Lifecycle
+
+Release and reconnect database connections when needed:
+
+```rust
+// Release when app goes to background
+client.release_db_connection()?;
+
+// Reconnect when app returns to foreground  
+client.reconnect_db()?;
+```
+
+### Set Version Information
+
+Include app version for diagnostics:
+
+```rust
+client_builder.version(VersionInfo {
+    version: env!("CARGO_PKG_VERSION").to_string(),
+})
+```
+
+</Steps>
+
+## Error Handling
+
+Common errors when building clients:
+
+```rust
+use xmtp_mls::builder::ClientBuilderError;
+
+match client_builder.build().await {
+    Ok(client) => { /* success */ }
+    Err(ClientBuilderError::MissingParameter { parameter }) => {
+        eprintln!("Missing required parameter: {}", parameter);
+    }
+    Err(ClientBuilderError::StorageError(e)) => {
+        eprintln!("Database error: {}", e);
+    }
+    Err(ClientBuilderError::Identity(e)) => {
+        eprintln!("Identity error: {}", e);
+    }
+    Err(e) => {
+        eprintln!("Build failed: {}", e);
+    }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Managing Groups" icon="users" href="/guides/managing-groups">
+    Create and manage group conversations
+  </Card>
+  <Card title="Database Encryption" icon="lock" href="/guides/database-encryption">
+    Secure your local database with SQLCipher
+  </Card>
+</CardGroup>

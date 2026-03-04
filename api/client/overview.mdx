@@ -1,0 +1,116 @@
+---
+title: Client Overview
+description: Core Client struct for XMTP messaging
+---
+
+The `Client` struct is the primary entry point for interacting with the XMTP network. It manages access to the network, identity, and data storage.
+
+## Client Structure
+
+The Client is generic over a `Context` parameter that encapsulates dependencies:
+
+```rust
+pub struct Client<Context> {
+    pub context: Context,
+    pub installation_id: InstallationId,
+    pub(crate) local_events: broadcast::Sender<LocalEvents>,
+    pub(crate) workers: Arc<WorkerRunner>,
+}
+```
+
+<ParamField path="context" type="Context">
+  Shared context containing API client, storage, identity, and configuration
+</ParamField>
+
+<ParamField path="installation_id" type="InstallationId">
+  Unique identifier for this client installation (public key bytes)
+</ParamField>
+
+<ParamField path="local_events" type="broadcast::Sender<LocalEvents>">
+  Event broadcaster for local client events (new groups, messages, etc.)
+</ParamField>
+
+<ParamField path="workers" type="Arc<WorkerRunner>">
+  Background worker manager for sync, key package rotation, etc.
+</ParamField>
+
+## Context Parameter
+
+The `Context` generic parameter must implement `XmtpSharedContext`, which provides:
+
+- **API Client**: Network communication via `XmtpApi` trait
+- **Database**: Local storage via `XmtpDb` trait
+- **Identity**: User's inbox and installation keys
+- **Smart Contract Verifier**: For validating blockchain signatures
+- **Version Info**: Client version metadata
+- **Worker Metrics**: Performance monitoring
+
+Typical implementations:
+- `XmtpMlsLocalContext<ApiClient, Db, Storage>` - Standard context with configurable API and storage
+- `MlsContext` - Default context alias used in bindings
+
+## Creating a Client
+
+Clients are created using the `ClientBuilder` fluent API. See [ClientBuilder](/api/client/builder) for details.
+
+```rust
+let client = Client::builder(identity_strategy)
+    .api_clients(api_client, sync_api_client)
+    .store(encrypted_store)
+    .default_mls_store()?
+    .build()
+    .await?;
+```
+
+## Key Capabilities
+
+### Identity Management
+- Register new identities on the network
+- Look up inbox IDs by blockchain address or other identifiers
+- Retrieve association state showing wallet/installation links
+- Check registration status
+
+### Conversation Operations
+- Create groups with custom permissions
+- Create or find direct messages
+- List conversations with filtering
+- Query groups by various criteria
+
+### Message Operations
+- Look up messages by ID
+- Delete messages locally
+- Enrich messages with decoded content
+
+### Synchronization
+- Sync welcome messages to discover new conversations
+- Sync all groups to receive latest messages
+- Sync device preferences across installations
+
+### Consent State
+- Set and retrieve consent preferences
+- Manage allow/deny lists for contacts
+
+### Network Queries
+- Check if addresses can receive messages
+- Fetch key packages for installations
+- Get inbox update counts
+
+## Thread Safety
+
+The Client is `Clone` when the underlying `Context` is `Clone` (which it typically is via `Arc`). Cloning creates a new handle to the same underlying client, allowing safe concurrent use across threads.
+
+## Database Lifecycle
+
+The client provides methods to manage database connections:
+
+- `release_db_connection()` - Close the database connection pool
+- `reconnect_db()` - Reopen database connections and restart workers
+
+This is useful for mobile apps that need to conserve resources when backgrounded.
+
+## Related Types
+
+- [ClientBuilder](/api/client/builder) - Fluent API for constructing clients
+- [Client Methods](/api/client/methods) - Complete method reference
+- `MlsGroup` - Individual conversation objects
+- `Identity` - User identity and credentials

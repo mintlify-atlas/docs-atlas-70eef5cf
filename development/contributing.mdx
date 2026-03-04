@@ -1,0 +1,264 @@
+---
+title: Contributing
+description: Guidelines for contributing to LibXMTP
+---
+
+Thank you for considering contributing to LibXMTP! Community contributions are key to the development and adoption of XMTP.
+
+## Ways to Contribute
+
+### Questions
+
+Have a question about building with XMTP? Ask in the [XMTP Community Forums](https://community.xmtp.org/).
+
+### Bug Reports
+
+Report bugs using [GitHub Issues](https://github.com/xmtp/libxmtp/issues). Please include:
+
+- Clear description of the issue
+- Steps to reproduce
+- Expected vs actual behavior
+- Environment details (OS, Rust version, etc.)
+
+### Feature Requests
+
+Request features using [GitHub Issues](https://github.com/xmtp/libxmtp/issues). Consider:
+
+- Describing the use case
+- Explaining why existing features don't address your needs
+- Proposing a potential implementation approach
+
+## Pull Requests
+
+PRs are encouraged, but consider starting with a feature request to temperature-check first.
+
+<Note>
+  If the PR involves a **major change to the protocol**, the work should be fleshed out as an [XMTP Improvement Proposal (XIP)](https://community.xmtp.org/t/xip-0-xip-purpose-process-guidelines/475) before work begins.
+</Note>
+
+### Approval Process
+
+After a pull request is submitted, a **single approval** is required to merge it.
+
+## AI-Generated Contributions Policy
+
+<Warning>
+  We do **not** accept pull requests that are generated entirely or primarily by AI/LLM tools (e.g., GitHub Copilot, ChatGPT, Claude).
+</Warning>
+
+This includes:
+
+- Automated typo fixes or formatting changes
+- Generic code improvements without context
+- Mass automated updates or refactoring
+
+Pull requests that appear to be AI-generated without meaningful human oversight will be closed without review.
+
+<Note>
+  To protect project quality and maintain contributor trust, we will **restrict access** for users who continue to submit AI-generated pull requests.
+</Note>
+
+### Using AI Tools Responsibly
+
+If you use AI tools to assist your development process, please:
+
+<Steps>
+  <Step title="Review thoroughly">
+    Thoroughly review and understand all generated code before submitting.
+  </Step>
+
+  <Step title="Provide context">
+    Include detailed PR descriptions explaining your changes and reasoning.
+  </Step>
+
+  <Step title="Be prepared to discuss">
+    Be ready to discuss your implementation decisions and how they align with project goals.
+  </Step>
+</Steps>
+
+## Code Quality Requirements
+
+Before submitting a PR, ensure your code meets quality standards:
+
+### Linting
+
+<CodeGroup>
+```bash All Linting
+just lint
+```
+
+```bash Rust Only
+just lint-rust
+```
+
+```bash Config Files
+just lint-config
+```
+
+```bash Markdown
+just lint-markdown
+```
+</CodeGroup>
+
+<Warning>
+  **ALWAYS run `just lint` before committing Rust changes.**
+</Warning>
+
+For Node.js bindings changes:
+
+```bash
+just node lint
+```
+
+### Formatting
+
+Format all code before submitting:
+
+```bash
+just format
+```
+
+This formats:
+- Rust code
+- Nix files
+- TOML configuration
+- TypeScript (Node.js bindings)
+- Swift (iOS bindings)
+- Kotlin (Android bindings)
+
+### Testing
+
+Add test coverage for new functionality:
+
+<CodeGroup>
+```bash Run All Tests
+just test
+```
+
+```bash Run Specific Crate Tests
+just test crate xmtp_mls
+```
+
+```bash Platform Tests
+just wasm test
+just node test
+just ios test
+just android test
+```
+</CodeGroup>
+
+See the [Testing guide](/development/testing) for more details.
+
+## Development Workflow
+
+<Steps>
+  <Step title="Set up environment">
+    Follow the [Development Setup guide](/development/setup) to configure your environment.
+  </Step>
+
+  <Step title="Create a branch">
+    Create a feature branch from `main`:
+    
+    ```bash
+    git checkout -b feature/your-feature-name
+    ```
+  </Step>
+
+  <Step title="Make changes">
+    Implement your changes following the project's coding standards.
+  </Step>
+
+  <Step title="Run quality checks">
+    Before committing:
+    
+    ```bash
+    just lint
+    just test
+    ```
+  </Step>
+
+  <Step title="Commit changes">
+    Write clear, descriptive commit messages:
+    
+    ```bash
+    git commit -m "feat: add support for X"
+    ```
+  </Step>
+
+  <Step title="Push and create PR">
+    Push your branch and create a pull request on GitHub.
+  </Step>
+</Steps>
+
+## Coding Standards
+
+### Rust Guidelines
+
+- Follow the official [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
+- Use `rustfmt` for consistent formatting (run via `just format`)
+- Address all `clippy` warnings (run via `just lint-rust`)
+- Write documentation for public APIs
+- Add tests for new functionality
+
+### Test Writing
+
+- Use `#[xmtp_common::test(unwrap_try = true)]` instead of `#[test]`
+- Use `rstest` for parameterized tests
+- Use the `tester!` macro for tests requiring wallets
+- Include both unit and integration tests where appropriate
+
+See the [Testing guide](/development/testing) for details.
+
+### Dependency Management
+
+When adding dependencies:
+
+1. Consider the impact on bundle size (especially for WASM)
+2. Ensure licenses are compatible
+3. Regenerate the workspace-hack:
+   
+   ```bash
+   nix develop --command cargo hakari generate
+   ```
+
+## Architecture Guidelines
+
+LibXMTP follows specific architectural patterns:
+
+- **Generic Client**: `Client<Context>` parameterized by context
+- **Builder Pattern**: Use `ClientBuilder` for complex object construction
+- **Trait Abstractions**: Implement traits (`XmtpApi`, `XmtpDb`, `InboxOwner`) for pluggability
+- **Platform-specific code**: Use `if_native!`/`if_wasm!` macros
+
+## Documentation
+
+Good documentation helps everyone:
+
+- Document public APIs with doc comments
+- Include code examples in documentation
+- Update relevant guides when changing behavior
+- Keep the README up to date
+
+## Getting Help
+
+If you need help with your contribution:
+
+- Ask questions in the [XMTP Community Forums](https://community.xmtp.org/)
+- Review the [CLAUDE.md](https://github.com/xmtp/libxmtp/blob/main/CLAUDE.md) file for project context
+- Look at existing PRs for examples
+- Reach out to maintainers via GitHub
+
+## Code Review Process
+
+When your PR is submitted:
+
+1. Automated checks will run (linting, tests, etc.)
+2. A maintainer will review your code
+3. You may be asked to make changes
+4. Once approved, your PR will be merged
+
+Be patient and responsive to feedback. Code review is a collaborative process that improves code quality.
+
+## License
+
+By contributing to LibXMTP, you agree that your contributions will be licensed under the same license as the project.

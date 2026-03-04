@@ -1,0 +1,476 @@
+---
+title: Permissions and Policies
+description: Configure group permissions and control who can perform actions in LibXMTP
+---
+
+LibXMTP uses a flexible policy system to control group permissions. This guide explains how to configure policies, manage admins, and enforce access control.
+
+## Policy Overview
+
+Each group has a `PolicySet` that defines who can perform restricted actions:
+
+- **add_member_policy** - Add new inboxes to the group
+- **remove_member_policy** - Remove inboxes from the group  
+- **update_metadata_policy** - Modify group name, description, image, etc.
+- **add_admin_policy** - Designate members as admins
+- **remove_admin_policy** - Remove admin designation
+- **update_permissions_policy** - Change the policy set itself
+
+## Preconfigured Policies
+
+LibXMTP provides common policy configurations:
+
+```rust
+use xmtp_mls::groups::group_permissions::PreconfiguredPolicies;
+
+// All members can perform all actions
+let policy_set = PreconfiguredPolicies::AllMembers.to_policy_set();
+
+// Only admins can perform restricted actions
+let policy_set = PreconfiguredPolicies::AdminsOnly.to_policy_set();
+
+// Default policy (admin-controlled)
+let policy_set = PolicySet::default();
+```
+
+### Available Preconfigured Policies
+
+<Tabs>
+  <Tab title="AllMembers">
+    Any group member can:
+    - Add/remove members
+    - Update metadata
+    - Add/remove admins
+    - Update permissions
+
+    ```rust
+    let group = client.create_group(
+        Some(PreconfiguredPolicies::AllMembers.to_policy_set()),
+        None,
+    )?;
+    ```
+  </Tab>
+  
+  <Tab title="AdminsOnly">
+    Only admins and super admins can:
+    - Add/remove members
+    - Update metadata
+    - Add/remove admins
+    - Update permissions
+
+    ```rust
+    let group = client.create_group(
+        Some(PreconfiguredPolicies::AdminsOnly.to_policy_set()),
+        None,
+    )?;
+    ```
+  </Tab>
+  
+  <Tab title="Default">
+    Mixed permissions:
+    - All members can add members
+    - Only admins can remove members
+    - Only admins can update metadata
+    - Only super admins can add/remove admins
+    - Only super admins can update permissions
+
+    ```rust
+    let group = client.create_group(
+        Some(PolicySet::default()),
+        None,
+    )?;
+    ```
+  </Tab>
+</Tabs>
+
+## Custom Policy Sets
+
+Create custom policies for fine-grained control:
+
+```rust
+use xmtp_mls::groups::group_permissions::{PolicySet, MembershipPolicy, MetadataPolicy};
+use xmtp_mls::groups::intents::PermissionPolicyOption;
+use xmtp_mls_common::group_mutable_metadata::MetadataField;
+use std::collections::HashMap;
+
+let mut metadata_policies = HashMap::new();
+metadata_policies.insert(
+    MetadataField::GroupName.to_string(),
+    MetadataPolicy::Allow,  // Anyone can change name
+);
+metadata_policies.insert(
+    MetadataField::Description.to_string(),
+    MetadataPolicy::Deny,  // No one can change description
+);
+metadata_policies.insert(
+    MetadataField::GroupImageUrlSquare.to_string(),
+    MetadataPolicy::AllowIfActorAdminOrSuperAdmin,  // Only admins
+);
+
+let policy_set = PolicySet {
+    add_member_policy: MembershipPolicy::Allow,  // Anyone can add
+    remove_member_policy: MembershipPolicy::AllowIfActorAdminOrSuperAdmin,
+    update_metadata_policy: metadata_policies,
+    add_admin_policy: PermissionPolicy::AllowIfActorSuperAdmin,
+    remove_admin_policy: PermissionPolicy::AllowIfActorSuperAdmin,
+    update_permissions_policy: PermissionPolicy::Deny,  // Immutable policies
+};
+
+let group = client.create_group(Some(policy_set), None)?;
+```
+
+## Policy Types
+
+### Membership Policies
+
+Control adding and removing members:
+
+```rust
+use xmtp_mls::groups::group_permissions::MembershipPolicy;
+
+pub enum MembershipPolicy {
+    Allow,                              // Any member can perform
+    Deny,                               // No one can perform
+    AllowIfActorAdminOrSuperAdmin,      // Only admins/super admins
+    AllowIfActorSuperAdmin,             // Only super admins
+}
+```
+
+### Metadata Policies
+
+Control metadata field updates:
+
+```rust
+use xmtp_mls::groups::group_permissions::MetadataPolicy;
+
+pub enum MetadataPolicy {
+    Allow,                              // Any member can update
+    Deny,                               // Field is immutable
+    AllowIfActorAdminOrSuperAdmin,      // Only admins can update
+    AllowIfActorSuperAdmin,             // Only super admins can update
+}
+```
+
+### Permission Update Policies
+
+Control who can modify policies:
+
+```rust
+pub enum PermissionPolicy {
+    Allow,                              // Any member can update policies
+    Deny,                               // Policies are immutable
+    AllowIfActorAdminOrSuperAdmin,      // Only admins can update
+    AllowIfActorSuperAdmin,             // Only super admins can update  
+}
+```
+
+## Admin Management
+
+### Admin Roles
+
+LibXMTP has two admin levels:
+
+1. **Super Admin** - Full control, cannot be removed
+2. **Admin** - Elevated permissions based on policies
+
+<Note>
+The group creator is automatically designated as the only super admin and cannot be removed from that role.
+</Note>
+
+### Add Admins
+
+```rust
+use xmtp_mls::groups::intents::UpdateAdminListIntentData;
+
+// Add a member as admin
+group.add_admin(inbox_id).await?;
+
+// Add as super admin
+group.add_super_admin(inbox_id).await?;
+```
+
+### Remove Admins
+
+```rust
+// Remove admin status (member remains in group)
+group.remove_admin(inbox_id).await?;
+
+// Cannot remove super admin
+// group.remove_super_admin(inbox_id).await?;  // Will fail!
+```
+
+### List Admins
+
+```rust
+let metadata = group.metadata()?;
+
+for admin_inbox_id in metadata.admin_list {
+    println!("Admin: {}", admin_inbox_id);
+}
+
+for super_admin in metadata.super_admin_list {
+    println!("Super Admin: {}", super_admin);
+}
+```
+
+## Updating Permissions
+
+### Update Individual Policies
+
+```rust
+use xmtp_mls::groups::intents::{PermissionUpdateType, PermissionPolicyOption};
+
+// Change who can add members
+group.update_permission_policy(
+    PermissionUpdateType::AddMember,
+    PermissionPolicyOption::AdminOnly,
+    MetadataField::GroupName,  // Not used for membership policies
+).await?;
+
+// Change who can update group name
+group.update_permission_policy(
+    PermissionUpdateType::UpdateMetadata,
+    PermissionPolicyOption::Allow,
+    MetadataField::GroupName,
+).await?;
+```
+
+### Update Entire Policy Set
+
+Replace all policies at once:
+
+```rust
+let new_policy_set = PreconfiguredPolicies::AllMembers.to_policy_set();
+
+group.update_policy_set(new_policy_set).await?;
+```
+
+<Warning>
+Updating the policy set requires permission from the `update_permissions_policy`. If that policy is set to `Deny`, the policies become immutable.
+</Warning>
+
+## Permission Validation
+
+Policies are enforced when processing commits:
+
+```rust
+// This validation happens automatically
+let actor = CommitParticipant {
+    inbox_id: "sender_inbox".to_string(),
+    is_admin: false,
+    is_super_admin: false,
+};
+
+let change = MetadataFieldChange {
+    field: MetadataField::GroupName,
+    old_value: Some("Old Name".to_string()),
+    new_value: Some("New Name".to_string()),
+};
+
+let policy = group.metadata_policy(MetadataField::GroupName)?;
+let allowed = policy.evaluate(&actor, &change);
+
+if !allowed {
+    return Err(GroupError::InvalidPermission);
+}
+```
+
+## Query Current Permissions
+
+```rust
+// Get current policies
+let permissions = group.permissions()?;
+
+println!("Add member: {:?}", permissions.policies.add_member_policy);
+println!("Remove member: {:?}", permissions.policies.remove_member_policy);
+
+// Check specific metadata policy
+if let Some(policy) = permissions.policies.update_metadata_policy.get("group_name") {
+    println!("Group name policy: {:?}", policy);
+}
+
+// Get preconfigured policy type (if applicable)
+if let Ok(preconfigured) = permissions.preconfigured_policy() {
+    println!("Using preconfigured: {:?}", preconfigured);
+}
+```
+
+## TypeScript (Node.js) Examples
+
+<CodeGroup>
+
+```typescript Create Group with Policies
+import { 
+  createClient, 
+  PermissionPolicy,
+  MetadataField 
+} from '@xmtp/node-sdk'
+
+// Create admin-only group
+const group = await client.conversations().createGroup(
+  PermissionPolicy.AdminOnly
+)
+
+// Create open group  
+const openGroup = await client.conversations().createGroup(
+  PermissionPolicy.AllMembers
+)
+```
+
+```typescript Manage Admins
+// Add admin
+await conversation.addAdmin(inboxId)
+
+// Add super admin
+await conversation.addSuperAdmin(inboxId)
+
+// Remove admin
+await conversation.removeAdmin(inboxId)
+
+// Check admin status
+const isAdmin = await conversation.isAdmin(inboxId)
+const isSuperAdmin = await conversation.isSuperAdmin(inboxId)
+```
+
+```typescript Update Permissions
+import { PermissionUpdateType, PermissionPolicy } from '@xmtp/node-sdk'
+
+// Update add member permission
+await conversation.updatePermission(
+  PermissionUpdateType.AddMember,
+  PermissionPolicy.AdminOnly,
+  MetadataField.GroupName
+)
+```
+
+</CodeGroup>
+
+## Advanced Policy Logic
+
+### Compound Policies
+
+Combine multiple conditions:
+
+```rust
+use xmtp_mls::groups::group_permissions::{MembershipPolicy, PolicyBuilder};
+
+// Create custom policy logic
+let policy = PolicyBuilder::new()
+    .allow_if_admin()
+    .or()
+    .allow_if_creator()
+    .build();
+```
+
+### Dynamic Policy Evaluation
+
+Policies are evaluated at commit time:
+
+```rust
+// Actor's current state is checked
+let actor = CommitParticipant {
+    inbox_id: sender_inbox_id,
+    is_admin: metadata.admin_list.contains(&sender_inbox_id),
+    is_super_admin: metadata.super_admin_list.contains(&sender_inbox_id),
+};
+
+// Policy evaluated with current context
+let allowed = policy.evaluate(&actor, &change);
+```
+
+## Best Practices
+
+<Steps>
+
+### Choose Appropriate Policies
+
+Match policies to your use case:
+
+```rust
+// Public community - anyone can join and post
+let community = client.create_group(
+    Some(PreconfiguredPolicies::AllMembers.to_policy_set()),
+    None,
+)?;
+
+// Moderated group - admin-controlled
+let moderated = client.create_group(
+    Some(PreconfiguredPolicies::AdminsOnly.to_policy_set()),
+    None,
+)?;
+```
+
+### Lock Critical Settings
+
+Make important policies immutable:
+
+```rust
+let mut policy_set = PolicySet::default();
+policy_set.update_permissions_policy = PermissionPolicy::Deny;
+
+let group = client.create_group(Some(policy_set), None)?;
+// Policies can never be changed!
+```
+
+### Validate Before Actions
+
+Check permissions before attempting operations:
+
+```rust
+let permissions = group.permissions()?;
+let can_add = matches!(
+    permissions.policies.add_member_policy,
+    MembershipPolicy::Allow | MembershipPolicy::AllowIfActorAdminOrSuperAdmin
+);
+
+if can_add {
+    group.add_members(&inbox_ids).await?;
+} else {
+    println!("You don't have permission to add members");
+}
+```
+
+### Document Policy Choices
+
+Make policy decisions explicit:
+
+```rust
+// Good: Clear intent
+let policy_set = if is_public_community {
+    PreconfiguredPolicies::AllMembers.to_policy_set()
+} else {
+    PreconfiguredPolicies::AdminsOnly.to_policy_set()
+};
+
+let group = client.create_group(Some(policy_set), None)?;
+```
+
+</Steps>
+
+## Error Handling
+
+```rust
+use xmtp_mls::groups::GroupError;
+
+match group.add_admin(inbox_id).await {
+    Ok(_) => println!("Admin added successfully"),
+    Err(GroupError::InvalidPermission) => {
+        eprintln!("You don't have permission to add admins");
+    }
+    Err(GroupError::NotFound(NotFound::InboxIdForAddress(addr))) => {
+        eprintln!("Inbox {} not found", addr);
+    }
+    Err(e) => eprintln!("Failed to add admin: {}", e),
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Consent Management" icon="hand" href="/guides/consent-management">
+    Control which groups and users you interact with
+  </Card>
+  <Card title="Sending Messages" icon="paper-plane" href="/guides/sending-messages">
+    Send messages within your configured groups
+  </Card>
+</CardGroup>

@@ -1,0 +1,326 @@
+---
+title: MLS Protocol
+description: How LibXMTP implements Messaging Layer Security for end-to-end encrypted group messaging
+---
+
+LibXMTP uses [Messaging Layer Security (MLS)](https://messaginglayersecurity.rocks/) to provide end-to-end encrypted group messaging with forward secrecy and post-compromise security.
+
+## Implementation Overview
+
+The `xmtp_mls` crate uses [OpenMLS](https://github.com/openmls/openmls) as the underlying MLS implementation, adding XMTP-specific validations and extensions.
+
+### Core Responsibilities
+
+An XMTP MLS client manages:
+
+1. **Network connections** through an API client
+2. **Local SQLite database** for state and messages
+3. **MlsProvider** for OpenMLS cryptographic operations
+4. **Message and identity authentication** according to XMTP rules
+
+These primitives enable group operations: creating groups, sending messages, authenticating messages from other users, and managing inbox state.
+
+## MLS Configuration
+
+### Ciphersuite
+
+LibXMTP uses a single ciphersuite for all groups:
+
+```
+MLS_128_DHKEMX25519_CHACHA20POLY1305_SHA256_Ed25519
+```
+
+This provides:
+- **Key Exchange**: X25519 for ECDH
+- **AEAD**: ChaCha20-Poly1305 for symmetric encryption
+- **Hash**: SHA-256
+- **Signatures**: Ed25519 for message authentication
+
+<Info>
+Signature keys are **not rotated** since the public key forms a persistent identity for the installation.
+</Info>
+
+### Group Parameters
+
+Groups are created with these OpenMLS parameters (from `groups/mod.rs:1218-1225`):
+
+- **Maximum past epochs**: 3 (lower than OpenMLS default of 5)
+- **Maximum forward ratchets**: 1000 (OpenMLS default)
+- **Wire format**: Private messages only (maximum metadata hiding)
+
+The lower past epoch limit increases forward secrecy by retaining less historical key material. This is safe because XMTP's delivery service ensures messages are sent in the epoch they're generated.
+
+### Secret Tree and AEAD
+
+XMTP uses the [MLS secret tree](https://www.rfc-editor.org/rfc/rfc9420.html#name-secret-tree) with AEAD for encrypting application messages. This provides:
+
+- **Per-sender key derivation**: Each sender has independent ratchet chains
+- **Forward secrecy**: Keys are deleted after use
+- **Out-of-order delivery**: Messages can be decrypted independently
+
+## Client Lifecycle
+
+### Initialization
+
+When initializing a new client with a fresh database:
+
+1. SDK generates a new **installation private key** (Ed25519)
+2. Key is stored in local SQLite database
+3. Subsequent instantiations reuse this key
+
+<Warning>
+XMTP does **not** use unique keys for each group. The same signature key is reused across all groups for a client.
+</Warning>
+
+### Installation Registration
+
+Before creating or joining groups, the client must link installation keys to an XMTP Inbox. Three scenarios exist:
+
+#### 1. New Inbox (no registration exists)
+
+The client:
+1. Generates an identity update with `CreateInbox` + `AddAssociation` actions
+2. Signs with installation keys
+3. Requests wallet signature from application
+4. Uploads signed key package and identity update
+5. If accepted, ready to send/receive messages
+
+<Info>
+For `nonce=0` with XMTP V2 keys available, `CreateInbox` can be signed with V2 keys instead of the wallet (one-time migration).
+</Info>
+
+#### 2. Existing Inbox, New Installation
+
+The client:
+1. Generates `AddAssociation` identity update  
+2. Signs with installation keys
+3. Requests signature from any wallet already linked to inbox
+4. Uploads signed key package and identity update
+
+#### 3. Existing Registration
+
+Client is immediately ready; no additional signatures or uploads needed.
+
+## Key Packages
+
+### Structure
+
+Each client maintains a key package containing:
+- Installation public key (Ed25519) in the credential
+- HPKE init key (ephemeral X25519)
+- Lifetime and supported capabilities
+- Signature over the package
+
+### Validation
+
+When validating another user's key package:
+1. Perform standard MLS validations (signature, authenticity)
+2. **Validate installation key is associated** with the `inbox_id` in the credential
+3. Download latest identity updates for the inbox
+4. Ensure installation key is present and not revoked
+
+### Rotation
+
+Clients rotate key packages:
+- After receiving a welcome message (package was consumed)
+- Can batch rotation if receiving N welcomes at once
+- Keep at most 2 HPKE keypairs (current + previous)
+
+Rotation occurs every time a key package is used to limit the impact if the HPKE keypair is compromised.
+
+<Warning>
+Due to XMTP's decentralized nature, true ephemeral key packages (one-time use) are impractical. Instead, rotation happens as soon as possible after use.
+</Warning>
+
+## Group Operations
+
+### Creating a Group
+
+```rust
+let group = client.create_group(
+    Some(permissions_policy_set),
+    Some(group_metadata_options),
+)?;
+```
+
+Initially:
+- Group has one member (creator's installation)
+- `GroupMembership` extension maps creator's `inbox_id` to `sequence_id=0`
+- Creator is the only `super_admin`
+- First action on group updates creator's `sequence_id`, adding other installations
+
+### Sync Welcomes
+
+Clients poll for welcome messages:
+
+```rust
+let new_groups = client.sync_welcomes().await?;
+```
+
+For each welcome:
+1. **Outer HPKE decryption**: Uses `hpke_init_key` from recipient's key package
+2. **Inner MLS welcome**: Standard TLS serialized MLS welcome  
+3. **Validation**: Ensure members match expected installations per `GroupMembership`
+4. Welcome contains ratchet tree (no additional queries needed)
+
+<Info>
+Welcome messages have two layers of encryption. The outer HPKE layer makes multiple welcomes unlinkable on the server.
+</Info>
+
+### Key Rotation in Groups
+
+Group members update their path encryption secret:
+1. **Before sending first message** to the group
+2. **Before sending**, if 3 months elapsed since last path update
+
+This provides post-compromise security by refreshing encryption keys periodically.
+
+## Validation
+
+LibXMTP performs two validation levels:
+
+### MLS Protocol Validation (OpenMLS)
+
+Standard MLS checks:
+- Signature verification
+- Epoch consistency  
+- Proposal validation
+- Tree math correctness
+
+### Application-Level Validation (LibXMTP)
+
+#### Commit Validation
+
+For each commit:
+1. Ensure allowed by group permission policies
+2. Validate credentials and key packages of new members
+3. Ensure MLS membership changes match `GroupMembership` extension diff
+
+#### Credential Validation
+
+The MLS credential contains a single field: `inbox_id`. To validate:
+1. Resolve the association state for that inbox (via XIP-46)
+2. Ensure installation key signing the credential is a current member
+
+<Note>
+XMTP does not implement credential rotation because they represent a long-lived connection between the MLS client and the inbox.
+</Note>
+
+## Revocation and Recovery
+
+### Installation Revocation
+
+Installations/wallets may be revoked by publishing a `RevokeAssociation` identity update ([XIP-46](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-46-multi-wallet-identity.md)).
+
+<Warning>
+Revoking an installation does **not immediately remove it** from existing groups. Any group member can update membership to the latest `sequence_id`, which removes the installation.
+</Warning>
+
+Clients periodically check for revocations during sync, so removals typically happen quickly, but the protocol makes no timeliness guarantees.
+
+### Inactive Clients
+
+XMTP does not automatically detect or remove inactive clients. Applications must:
+1. Detect inactivity at the application level
+2. Trigger manual removal of inactive installations
+
+## Extensions
+
+### Required Extensions
+
+XMTP uses these `GroupContextExtensions` in every MLS group:
+
+1. **`GroupMembers`**: List of inbox IDs and their current `sequence_id`
+   - Governed by `add_member_policy` and `remove_member_policy`
+
+2. **`GroupMutableMetadata`**: User-defined metadata (name, description, etc.)
+   - Changes governed by `update_metadata_policy`
+   - Admin list changes governed by `add_admin_policy` / `remove_admin_policy`
+
+3. **`GroupMutablePermissions`**: Current permission policies
+   - Changes governed by `update_permissions_policy`
+
+See [Groups and Conversations](/concepts/groups-and-conversations) for details on permissions and metadata.
+
+## Authentication Service
+
+Per [RFC 9420 Section 5.3.1](https://www.rfc-editor.org/rfc/rfc9420.html#section-5.3.1), an Authentication Service (AS) links public keys in leaf nodes to users.
+
+XMTP implements a **direct binding** instead of a separate AS:
+- Inbox ID is directly bound to the signature key in leaf nodes
+- Validation done via [XIP-46](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-46-multi-wallet-identity.md) association state
+
+This approach simplifies the architecture while maintaining security guarantees.
+
+## Delivery Service
+
+The Delivery Service (DS) transports messages and key packages between clients.
+
+### XMTP Implementation
+
+XMTP uses a central server with:
+- No special permissions required (IP rate-limited for spam)
+- APIs for submitting and reading:
+  - MLS-encrypted chat messages (by group ID)
+  - Welcome messages (by installation key)
+- Messages returned in order received
+- Reading does not change server state
+
+### Welcome Message Privacy
+
+Welcomes have an **additional HPKE encryption layer** applied client-side:
+- When creating a commit with multiple Add proposals, welcomes share content
+- Without extra encryption, observers could link users added to the same group
+- HPKE encryption makes welcomes unlinkable
+
+### Decryption Failures
+
+If decryption fails:
+- SDK drops the message
+- Telemetry notifies developers of failures
+- Currently no fork detection or recovery mechanism
+
+Decryption failures could indicate:
+- DoS attack (spam)
+- Group state divergence (SDK or OpenMLS bug)
+
+If data shows this is a real problem, fork discovery and recovery mechanisms will be developed.
+
+## Security Properties
+
+### Provided Guarantees
+
+MLS with XMTP's configuration provides:
+- **Privacy**: Message content hidden from non-members
+- **Authenticity**: Messages verifiably from claimed sender  
+- **Forward Secrecy**: Past messages safe if keys compromised
+- **Post-Compromise Security**: Future messages safe after key refresh
+
+### Not Protected Against
+
+- Physical attacks on endpoints
+- Network privacy (IP addresses visible)
+- Message deniability
+- Membership privacy (inherited from MLS)
+- Ciphertext size analysis
+- Quantum adversaries (no post-quantum ciphersuite standardized yet)
+
+<Info>
+With [#1851](https://github.com/xmtp/libxmtp/pull/1851), LibXMTP provides Harvest Now Decrypt Later (HNDL) forward security.
+</Info>
+
+## Transport Security
+
+Per [MLS architecture Section 8.1](https://datatracker.ietf.org/doc/html/draft-ietf-mls-architecture#section-8.1), transport channels should hide metadata.
+
+XMTP uses **gRPC with TLS** via [Rustls](https://github.com/rustls/rustls). Since XMTP uses private messages everywhere (maximum metadata hiding), minimal metadata leaks even without transport-level protection.
+
+<Warning>
+A specific TLS ciphersuite should be configured. This documentation will be updated when that's implemented.
+</Warning>
+
+## Related Concepts
+
+- [Identity System](/concepts/identity-system) - Wallet and installation associations
+- [Groups and Conversations](/concepts/groups-and-conversations) - Group management
+- [Client Lifecycle](/concepts/client-lifecycle) - Initialization and registration

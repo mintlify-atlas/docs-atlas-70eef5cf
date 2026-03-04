@@ -1,0 +1,457 @@
+---
+title: "xmtp_db"
+description: "SQLite interface for XMTP"
+---
+
+## Overview
+
+The `xmtp_db` crate provides a durable, encrypted SQLite-based storage layer for XMTP. It handles persistence of groups, messages, identity information, and MLS protocol state using Diesel ORM with encrypted storage via SQLCipher.
+
+## Installation
+
+```toml
+[dependencies]
+xmtp_db = "*"
+```
+
+## Key Exports
+
+<ParamField path="DefaultStore" type="EncryptedMessageStore<DefaultDatabase>">
+  The default platform-specific encrypted message store implementation.
+</ParamField>
+
+<ParamField path="DefaultDbConnection" type="DbConnection">
+  Default database connection type for the store.
+</ParamField>
+
+<ParamField path="DefaultMlsStore" type="SqlKeyStore">
+  Default MLS key store implementation backed by SQL.
+</ParamField>
+
+<ParamField path="EncryptedMessageStore" type="struct">
+  Main encrypted storage implementation parameterized by database type.
+</ParamField>
+
+<ParamField path="DbConnection" type="struct">
+  Wrapper around database connections with query execution methods.
+</ParamField>
+
+## Core Modules
+
+### encrypted_store
+
+Main encrypted storage implementation:
+- Database initialization
+- Migration management
+- Encrypted operations
+- Transaction handling
+
+### sql_key_store
+
+OpenMLS key store implementation:
+- MLS group state storage
+- Key package storage
+- Cryptographic key management
+- Credential storage
+
+### group
+
+Group conversation storage:
+- Group metadata
+- Membership information
+- Group state tracking
+- Conversation types (group/DM)
+
+### group_message
+
+Message persistence:
+- Message storage and retrieval
+- Delivery status tracking
+- Message sequencing
+- Reactions and replies
+
+### identity
+
+Identity information storage:
+- Installation identity
+- Inbox associations
+- Key rotation state
+
+### consent_record
+
+Consent state management:
+- Per-contact consent
+- Per-group consent
+- Allow/deny lists
+
+## Main Types and Traits
+
+<ResponseField name="XmtpDb" type="trait">
+  Core trait for XMTP database operations.
+  
+  **Associated Types:**
+  - `DbQuery` - Query type for database operations
+  
+  **Key Methods:**
+  - `raw_query_read()` - Execute read-only queries
+  - `raw_query_write()` - Execute write queries
+  - `transaction()` - Execute transactional operations
+</ResponseField>
+
+<ResponseField name="EncryptedMessageStore<D>" type="struct">
+  Encrypted storage implementation.
+  
+  **Type Parameters:**
+  - `D: Database` - Underlying database type
+  
+  **Methods:**
+  - `new()` - Create new store with encryption key
+  - `new_unencrypted()` - Create unencrypted store (testing only)
+  - `conn()` - Get database connection
+</ResponseField>
+
+<ResponseField name="StoredGroup" type="struct">
+  Represents a stored group conversation.
+  
+  **Fields:**
+  - `id: Vec<u8>` - Group ID
+  - `created_at_ns: i64` - Creation timestamp
+  - `membership_state: GroupMembershipState` - Current membership
+  - `conversation_type: ConversationType` - Group or DM
+  - `added_by_inbox_id: String` - Who added this installation
+</ResponseField>
+
+<ResponseField name="StoredGroupMessage" type="struct">
+  Represents a stored message.
+  
+  **Fields:**
+  - `id: Vec<u8>` - Message ID
+  - `group_id: Vec<u8>` - Parent group ID
+  - `decrypted_message_bytes: Vec<u8>` - Message content
+  - `sent_at_ns: i64` - Send timestamp
+  - `sender_inbox_id: String` - Sender's inbox ID
+  - `kind: GroupMessageKind` - Message type
+  - `delivery_status: DeliveryStatus` - Delivery state
+  - `content_type: ContentType` - Content encoding
+</ResponseField>
+
+<ResponseField name="StoredIdentity" type="struct">
+  Stored installation identity.
+  
+  **Fields:**
+  - `inbox_id: String` - Associated inbox ID
+  - `installation_keys: Vec<u8>` - Installation key bytes
+  - `credential_bytes: Vec<u8>` - MLS credential
+  - `next_key_package_rotation_ns: i64` - Next rotation time
+</ResponseField>
+
+<ResponseField name="StoredConsentRecord" type="struct">
+  Consent state for a contact or group.
+  
+  **Fields:**
+  - `entity_type: ConsentType` - Address, Group, or Inbox
+  - `state: ConsentState` - Allowed, Denied, or Unknown
+  - `entity: String` - Entity identifier
+</ResponseField>
+
+## Database Traits
+
+<ResponseField name="Store" type="trait">
+  Trait for storing entities in the database.
+  
+  ```rust
+  pub trait Store {
+      fn store(&self, conn: &impl XmtpDb) -> Result<(), StorageError>;
+  }
+  ```
+</ResponseField>
+
+<ResponseField name="Fetch" type="trait">
+  Trait for fetching entities from the database.
+  
+  ```rust
+  pub trait Fetch<Key> {
+      fn fetch(conn: &impl XmtpDb, key: &Key) -> Result<Self, StorageError>;
+  }
+  ```
+</ResponseField>
+
+<ResponseField name="Delete" type="trait">
+  Trait for deleting entities.
+  
+  ```rust
+  pub trait Delete {
+      fn delete(self, conn: &impl XmtpDb) -> Result<(), StorageError>;
+  }
+  ```
+</ResponseField>
+
+## Usage Examples
+
+### Creating an Encrypted Store
+
+```rust
+use xmtp_db::{EncryptedMessageStore, EncryptionKey};
+
+// Create encryption key (32 bytes)
+let encryption_key = EncryptionKey::try_from(key_bytes)?;
+
+// Create encrypted store
+let store = EncryptedMessageStore::new(
+    "path/to/database.db",
+    encryption_key,
+)?;
+```
+
+### Storing and Fetching Groups
+
+```rust
+use xmtp_db::{
+    Store, Fetch,
+    group::StoredGroup,
+    group::ConversationType,
+};
+
+// Create and store a group
+let group = StoredGroup {
+    id: group_id.clone(),
+    created_at_ns: now_ns(),
+    membership_state: GroupMembershipState::Allowed,
+    conversation_type: ConversationType::Group,
+    added_by_inbox_id: inbox_id.clone(),
+    ..Default::default()
+};
+
+group.store(&store)?;
+
+// Fetch the group
+let fetched = StoredGroup::fetch(&store, &group_id)?;
+```
+
+### Storing Messages
+
+```rust
+use xmtp_db::group_message::{
+    StoredGroupMessage,
+    GroupMessageKind,
+    DeliveryStatus,
+};
+
+let message = StoredGroupMessage {
+    id: message_id,
+    group_id: group_id.clone(),
+    decrypted_message_bytes: content.into(),
+    sent_at_ns: timestamp,
+    sender_inbox_id: sender_id.clone(),
+    kind: GroupMessageKind::Application,
+    delivery_status: DeliveryStatus::Published,
+    content_type: ContentType::Text,
+    ..Default::default()
+};
+
+message.store(&store)?;
+```
+
+### Querying Messages
+
+```rust
+use xmtp_db::group_message::{
+    QueryGroupMessage,
+    MsgQueryArgs,
+};
+
+// Query with filters
+let messages = store.conn().query_group_messages(
+    MsgQueryArgs::default()
+        .group_id(group_id)
+        .limit(50)
+        .sent_after_ns(start_time),
+)?;
+
+for msg in messages {
+    println!("Message: {:?}", msg.decrypted_message_bytes);
+}
+```
+
+### Managing Consent
+
+```rust
+use xmtp_db::consent_record::{
+    StoredConsentRecord,
+    ConsentType,
+    ConsentState,
+};
+
+// Store consent record
+let consent = StoredConsentRecord {
+    entity_type: ConsentType::Address,
+    state: ConsentState::Allowed,
+    entity: wallet_address.clone(),
+};
+
+consent.store(&store)?;
+
+// Query consent
+let is_allowed = store.conn().is_allowed(
+    ConsentType::Address,
+    &wallet_address,
+)?;
+```
+
+### Transactions
+
+```rust
+use xmtp_db::traits::Transaction;
+
+// Execute multiple operations in a transaction
+store.transaction(|conn| {
+    group.store(conn)?;
+    message.store(conn)?;
+    consent.store(conn)?;
+    Ok(())
+})?;
+```
+
+### Using the Prelude
+
+```rust
+use xmtp_db::prelude::*;
+
+// Import all common query traits and types
+let groups = conn.query_groups(
+    GroupQueryArgs::default()
+        .allowed_states(vec![GroupMembershipState::Allowed])
+)?;
+```
+
+## Storage Modules
+
+Each storage module provides query traits and types:
+
+<ParamField path="QueryGroup" type="trait">
+  Query operations for groups.
+  
+  **Methods:**
+  - `query_groups()` - List groups with filters
+  - `find_groups()` - Find specific groups
+</ParamField>
+
+<ParamField path="QueryGroupMessage" type="trait">
+  Query operations for messages.
+  
+  **Methods:**
+  - `query_group_messages()` - List messages
+  - `get_latest_message()` - Get most recent message
+</ParamField>
+
+<ParamField path="QueryIdentity" type="trait">
+  Query operations for identity.
+  
+  **Methods:**
+  - `fetch_identity()` - Get installation identity
+  - `store_identity()` - Store identity
+</ParamField>
+
+<ParamField path="QueryConsentRecord" type="trait">
+  Query operations for consent.
+  
+  **Methods:**
+  - `is_allowed()` - Check if entity is allowed
+  - `get_consent_record()` - Get consent state
+</ParamField>
+
+## Migrations
+
+Migrations are located in `crates/xmtp_db/migrations/` and run automatically:
+
+```rust
+// Migrations run on store creation
+let store = EncryptedMessageStore::new(path, key)?;
+// Database is now at latest schema version
+```
+
+## Error Types
+
+```rust
+use xmtp_db::StorageError;
+
+pub enum StorageError {
+    Diesel(diesel::result::Error),
+    NotFound(NotFound),
+    DuplicateItem(DuplicateItem),
+    Serialization(String),
+    Deserialization(String),
+    PoolNeedsConnection,
+    DbInit(String),
+}
+```
+
+## Features
+
+<ParamField path="test-utils" type="feature">
+  Testing utilities including in-memory databases and test helpers.
+</ParamField>
+
+<ParamField path="update-schema" type="feature">
+  Tools for updating database schema definitions.
+</ParamField>
+
+## Platform Support
+
+### Native
+- Uses SQLCipher with bundled vendored OpenSSL
+- Connection pooling via r2d2
+- Full encryption support
+
+### WASM
+- Uses sqlite-wasm-rs
+- Single-threaded connections
+- Limited encryption (browser security model)
+
+## Testing Utilities
+
+With `test-utils` feature:
+
+```rust
+use xmtp_db::test_utils::*;
+
+// Create in-memory test database
+let store = TestStore::new()?;
+
+// Register test triggers for tracking
+store.conn().register_triggers();
+
+// Check test metadata
+let intents_count = store.conn().intents_published();
+```
+
+## Performance Considerations
+
+### Indexing
+
+The schema includes indexes on commonly queried fields:
+- Group ID and creation time
+- Message sent_at and sender
+- Consent entity lookups
+
+### Connection Pooling
+
+On native platforms, use connection pools for concurrent access:
+
+```rust
+// Connections are pooled automatically
+let conn = store.conn();
+```
+
+### Batch Operations
+
+Use transactions for batch inserts:
+
+```rust
+store.transaction(|conn| {
+    for message in messages {
+        message.store(conn)?;
+    }
+    Ok(())
+})?;
+```

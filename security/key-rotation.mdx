@@ -1,0 +1,344 @@
+---
+title: Key Rotation
+description: Key package lifecycle, rotation policies, and HPKE key management in LibXMTP
+---
+
+LibXMTP implements automatic key rotation to maintain forward secrecy and limit the impact of key compromise.
+
+## Key Types and Rotation Policies
+
+### Installation Signature Keys
+
+**NOT rotated**
+
+Installation signature keys (Ed25519) form the persistent identity for an installation and are **never rotated**.
+
+```rust
+// Generated once during client initialization
+let installation_keys = ed25519_dalek::SigningKey::generate(&mut rng);
+```
+
+<Warning>
+Signature keys are permanent identifiers. Only the path encryption secrets are rotated for forward secrecy.
+</Warning>
+
+**Rationale:** The public signature key is used in:
+
+- MLS leaf nodes as the installation identifier
+- Key package signatures
+- Credential binding to the inbox
+
+Changing it would break the identity chain.
+
+### Path Encryption Secrets
+
+**Rotated periodically**
+
+Path encryption secrets provide forward secrecy and are updated automatically.
+
+**Rotation triggers:**
+
+1. **Before first message** - Before sending the first message to any group
+2. **After 3 months** - Before sending a message if 3 months (90 days) have elapsed since the last path update
+
+```rust
+// Location: crates/xmtp_mls/src/groups/mod.rs
+const KEY_ROTATION_INTERVAL_NS: u64 = 90 * 24 * 60 * 60 * 1_000_000_000; // 90 days
+```
+
+Path updates are performed through MLS commit messages that update the sender's path from leaf to root in the ratchet tree.
+
+### HPKE Key Pairs
+
+**Rotated with key packages**
+
+HPKE keys are used to encrypt Welcome messages and are rotated as part of key package rotation.
+
+**Key package rotation occurs:**
+
+1. After receiving a Welcome message that used the published key package
+2. When explicitly queued by the application
+3. Periodically if a rotation is queued
+
+<Note>
+Clients may **batch rotations** - if N Welcome messages arrive simultaneously, only one rotation is performed.
+</Note>
+
+**Retention policy:**
+
+Clients keep at most **2 HPKE keypairs**:
+- Current key package HPKE key
+- Previous key package HPKE key
+
+Older keys are deleted after successful rotation.
+
+## Key Package Lifecycle
+
+### Generation and Upload
+
+Key packages are generated during:
+
+1. **Initial registration** - First time client is created
+2. **Rotation** - After Welcome messages or when queued
+
+**Generation process:**
+
+```rust
+// 1. Generate key package locally
+let NewKeyPackageResult { key_package, pq_pub_key } = 
+    identity.new_key_package(&provider, include_post_quantum)?;
+
+// 2. Serialize to TLS format
+let kp_bytes = key_package.tls_serialize_detached()?;
+
+// 3. Store in local database with history ID
+let history_id = conn.insert_key_package_history(kp_bytes.clone())?;
+
+// 4. Upload to network
+api_client.upload_key_package(kp_bytes, is_inbox_id_credential).await?;
+
+// 5. Mark previous key packages for deletion
+conn.mark_key_package_before_id_to_be_deleted(history_id)?;
+```
+
+**Location:** `crates/xmtp_mls/src/identity.rs:681-690`
+
+### Post-Quantum Key Package Extensions
+
+LibXMTP includes post-quantum encryption in key packages using **XWing-06**.
+
+**Extension structure:**
+
+```rust
+pub struct WrapperEncryptionExtension {
+    pub hpke_welcome_key: Vec<u8>, // XWing-06 public key (1216 bytes)
+}
+```
+
+The corresponding private key is stored locally using a derived storage key:
+
+```rust
+fn pq_key_package_references_key(pub_key: &[u8]) -> Vec<u8> {
+    blake3::hash(pub_key).as_bytes().to_vec()
+}
+```
+
+**Location:** `crates/xmtp_mls/src/groups/mls_ext.rs`
+
+### Key Package Validation
+
+When fetching a key package for another user:
+
+**MLS validation (OpenMLS):**
+
+```rust
+let kp = kp_in.validate(
+    crypto_provider,
+    MLS_PROTOCOL_VERSION,
+    openmls::prelude::LeafNodeLifetimePolicy::Verify,
+)?;
+```
+
+**XMTP validation:**
+
+1. Extract and decode MLS credential
+2. Fetch identity updates for the inbox
+3. Verify installation key is in the current association state
+
+```rust
+let installation_key = key_package.leaf_node().signature_key();
+let state = get_state(identity_updates)?;
+assert!(state.installation_ids().contains(&installation_key));
+```
+
+**Location:** `crates/xmtp_mls/src/verified_key_package_v2.rs:74-86`
+
+## Automatic Rotation
+
+### Rotation Worker
+
+The `KeyPackagesCleanerWorker` runs periodically to:
+
+1. Delete expired key packages
+2. Rotate the key package if needed
+
+**Configuration:**
+
+```rust
+const CLEANUP_INTERVAL_SECS: u64 = 60; // Run every 60 seconds
+const KEY_PACKAGE_ROTATION_INTERVAL_NS: u64 = 90 * 24 * 60 * 60 * 1_000_000_000;
+```
+
+**Location:** `crates/xmtp_mls/src/worker/key_package_cleaner.rs`
+
+### Rotation Trigger Logic
+
+**1. After Welcome Message**
+
+When processing a Welcome:
+
+```rust
+// After successfully joining group
+identity.queue_key_rotation(conn).await?;
+```
+
+**2. Periodic Check**
+
+The worker checks if rotation is due:
+
+```rust
+async fn rotate_last_key_package_if_needed(&mut self) -> Result<()> {
+    let metadata = conn.get_key_package_rotation_metadata()?;
+    
+    if now_ns() >= metadata.next_key_package_rotation_ns {
+        identity.rotate_and_upload_key_package(
+            api_client,
+            storage,
+            CREATE_PQ_KEY_PACKAGE_EXTENSION,
+        ).await?;
+    }
+}
+```
+
+**Location:** `crates/xmtp_mls/src/worker/key_package_cleaner.rs:189-205`
+
+### Deletion of Old Key Packages
+
+After successful rotation:
+
+```rust
+// Mark all key packages before the new one for deletion
+conn.mark_key_package_before_id_to_be_deleted(history_id)?;
+
+// Cleaner worker deletes them from key store
+for kp in conn.get_expired_key_packages()? {
+    self.delete_key_package(
+        kp.key_package_hash_ref,
+        kp.pq_public_key,
+    )?;
+}
+```
+
+**Components deleted:**
+
+1. OpenMLS key package from key store
+2. Post-quantum private key (if present)
+3. Database history entry (after confirmed deleted)
+
+**Location:** `crates/xmtp_mls/src/worker/key_package_cleaner.rs:145-170`
+
+## Key Package Reuse
+
+LibXMTP uses **last resort key packages only**, meaning the same key package may be used multiple times.
+
+<Accordion title="Why does XMTP reuse key packages?">
+Due to XMTP's decentralized nature, it is nearly impossible to use truly ephemeral (one-time) key packages. 
+
+While [RFC 9420 Section 10](https://www.rfc-editor.org/rfc/rfc9420.html#section-10) states key packages SHOULD NOT be reused, XMTP implements aggressive rotation to minimize the window of reuse.
+</Accordion>
+
+### Mitigation Strategy
+
+**Immediate rotation protocol:**
+
+1. Client publishes key package KP1 to network
+2. Alice downloads KP1 and creates a group
+3. Alice sends Welcome message encrypted with KP1's HPKE key
+4. Client receives Welcome, joins group
+5. **Client immediately rotates** to KP2
+6. Any subsequent invites use KP2
+
+**Batching optimization:**
+
+If the client receives multiple Welcomes before rotation:
+
+1. Process all Welcome messages
+2. Rotate **once** after processing all
+3. Reduces rotation overhead while maintaining security
+
+### Security Considerations
+
+<Warning>
+Reusing a key package is equivalent to using the same static key multiple times for encryption. While not inherently insecure, it allows attackers to collect multiple ciphertexts for the same public key.
+
+Combined with other factors (weak randomness, implementation bugs), this could enable attacks. XMTP's rotation protocol minimizes this risk.
+</Warning>
+
+See [Section 16.8 of RFC 9420](https://www.rfc-editor.org/rfc/rfc9420.html#name-keypackage-reuse) for detailed security implications.
+
+## Key Package Lifetime
+
+Key packages include a lifetime extension specifying validity period:
+
+```rust
+pub struct VerifiedLifetime {
+    pub not_before: u64,  // Unix timestamp
+    pub not_after: u64,   // Unix timestamp
+}
+```
+
+OpenMLS validates that:
+- Current time ≥ `not_before`
+- Current time ≤ `not_after`
+
+**Default lifetime:**
+
+XMTP uses a long lifetime for last resort key packages (typically months to years). Expired key packages are deleted by the cleaner worker.
+
+## Manual Rotation
+
+Applications can trigger key package rotation explicitly:
+
+```rust
+// Queue rotation to occur soon
+client.queue_key_rotation().await?;
+
+// Or rotate immediately
+client.rotate_and_upload_key_package(include_post_quantum).await?;
+```
+
+<Note>
+Manual rotation is rarely needed. The automatic rotation system handles most scenarios.
+</Note>
+
+## Troubleshooting
+
+### Key Package Upload Failures
+
+If upload fails, the locally generated key package is **not** marked for deletion:
+
+```rust
+match api_client.upload_key_package(kp_bytes, true).await {
+    Ok(()) => {
+        // Success - mark old packages for deletion
+        conn.mark_key_package_before_id_to_be_deleted(history_id)?;
+    }
+    Err(err) => {
+        // Failure - keep the new package for retry
+        return Err(IdentityError::ApiClient(err));
+    }
+}
+```
+
+This prevents orphaned key packages when signature validation fails on the network.
+
+### Rotation Timing
+
+The rotation interval is tracked in nanoseconds:
+
+```rust
+struct KeyPackageRotationMetadata {
+    next_key_package_rotation_ns: u64,
+}
+
+// After successful upload
+conn.reset_key_package_rotation_queue(KEY_PACKAGE_ROTATION_INTERVAL_NS)?;
+```
+
+**Location:** Database `key_package_rotation_metadata` table
+
+## Related Documentation
+
+- [Security Overview](/security/overview) - Forward secrecy properties
+- [Credential Validation](/security/credential-validation) - Key package validation
+- [Revocation](/security/revocation) - Revoking installations

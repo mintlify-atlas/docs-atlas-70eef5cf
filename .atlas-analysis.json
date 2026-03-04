@@ -1,29 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "LibXMTP",
+  "projectType": "sdk-library",
+  "projectName": "LibXMTP",
+  "projectDescription": "Shared library encapsulating the core functionality of the XMTP messaging protocol, including cryptography, networking, and language bindings.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#94cb04",
-    "light": "#545454",
-    "dark": "#94cb04"
-  },
-  "favicon": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png",
-  "logo": {
-    "light": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png",
-    "dark": "https://media.brand.dev/288cc7c4-5cef-4376-950b-bdf0083eedae.png"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/xmtp/libxmtp"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/xmtp/libxmtp",
-      "website": "https://xmtp.org"
-    }
-  },
+  "primaryColor": "#94cb04",
+  "lightColor": "#545454",
+  "darkColor": null,
   "navigation": {
     "tabs": [
       {
@@ -145,5 +127,31 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "MLS (Messaging Layer Security) protocol implementation using OpenMLS",
+    "Multi-wallet identity system with Ethereum wallet support",
+    "Cross-platform bindings for Node.js, Swift, Kotlin, and WebAssembly",
+    "Group messaging with configurable permissions and policies",
+    "End-to-end encrypted messaging with forward secrecy",
+    "SQLite database with optional SQLCipher encryption",
+    "Identity management with wallet associations and revocation",
+    "Consent management for spam prevention"
+  ],
+  "publicApiSurface": [
+    "Client - Main entry point for XMTP MLS operations",
+    "ClientBuilder - Fluent builder for client configuration",
+    "MlsGroup - Represents an MLS group conversation",
+    "GroupMetadataOptions - Configuration for group metadata",
+    "GroupPermissions - Policy configuration for group actions",
+    "DecodedMessage - Represents a decoded message with metadata",
+    "InboxOwner - Trait for identity authentication",
+    "Network - Network configuration (Dev/Prod/Local)",
+    "XmtpApi - Trait for API client implementations",
+    "XmtpDb - Database interface for storage operations",
+    "ConsentState - Enum for consent management",
+    "Identity - Represents an XMTP identity",
+    "AssociationState - State of wallet/installation associations",
+    "SignatureRequest - Builder for identity signature requests"
+  ]
 }

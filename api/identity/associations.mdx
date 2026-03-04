@@ -1,0 +1,669 @@
+---
+title: Identity Associations
+description: Managing associations between wallets and installations in LibXMTP
+---
+
+Associations allow multiple wallets and device installations to be linked to a single inbox. The association system implements [XIP-46](https://github.com/xmtp/XIPs/pull/53) for secure identity management.
+
+## AssociationState
+
+The `AssociationState` represents the current state of all associations for an inbox:
+
+```rust
+pub struct AssociationState {
+    pub(crate) inbox_id: String,
+    pub(crate) members: HashMap<MemberIdentifier, Member>,
+    pub(crate) recovery_identifier: Identifier,
+    pub(crate) seen_signatures: HashSet<Vec<u8>>,
+}
+```
+
+See `state.rs:57-63` for the struct definition.
+
+### Querying State
+
+```rust
+impl AssociationState {
+    /// Get inbox ID
+    pub fn inbox_id(&self) -> InboxIdRef<'_>;
+
+    /// Get the recovery identifier (primary wallet)
+    pub fn recovery_identifier(&self) -> &Identifier;
+
+    /// Get all members, sorted by timestamp
+    pub fn members(&self) -> Vec<Member>;
+
+    /// Get a specific member
+    pub fn get(&self, identifier: &MemberIdentifier) -> Option<&Member>;
+
+    /// Get members by kind (Installation, Ethereum, Passkey)
+    pub fn members_by_kind(&self, kind: MemberKind) -> Vec<Member>;
+
+    /// Get members added by a specific parent
+    pub fn members_by_parent(&self, parent_id: &MemberIdentifier) -> Vec<Member>;
+
+    /// Get all wallet identifiers (excludes installations)
+    pub fn identifiers(&self) -> Vec<Identifier>;
+
+    /// Get all installation IDs
+    pub fn installation_ids(&self) -> Vec<Vec<u8>>;
+
+    /// Get installations with metadata
+    pub fn installations(&self) -> Vec<Installation>;
+}
+```
+
+See `state.rs:115-218` for method implementations.
+
+### Creating State
+
+Create a new state from a wallet:
+
+```rust
+let state = AssociationState::new(
+    account_identifier,
+    nonce,
+    chain_id,  // Optional, for SCW
+)?;
+```
+
+Or reconstruct from identity updates:
+
+```rust
+use xmtp_id::associations::get_state;
+
+let updates: Vec<IdentityUpdate> = /* ... */;
+let state = get_state(updates)?;
+```
+
+See `state.rs:252-267` for the new method.
+
+## MemberIdentifier
+
+`MemberIdentifier` represents any entity that can be associated with an inbox:
+
+```rust
+pub enum MemberIdentifier {
+    Installation(Installation),  // Ed25519 public key
+    Ethereum(Ethereum),          // Ethereum address
+    Passkey(Passkey),           // WebAuthn public key
+}
+```
+
+See `member.rs:20-26` for the enum definition.
+
+### Creating Identifiers
+
+```rust
+// Installation
+let installation = MemberIdentifier::installation(public_key_bytes);
+
+// Ethereum wallet
+let wallet = MemberIdentifier::eth("0x1234...")?;
+
+// Passkey
+let passkey = MemberIdentifier::Passkey(Passkey {
+    key: public_key_bytes,
+    relying_party: Some("example.com".to_string()),
+});
+```
+
+### Querying Identifiers
+
+```rust
+// Check member kind
+let kind = member_identifier.kind();
+
+// Extract specific types
+if let Some(key) = member_identifier.installation_key() {
+    println!("Installation: {:?}", key);
+}
+
+if let Some(addr) = member_identifier.eth_address() {
+    println!("Ethereum: {}", addr);
+}
+```
+
+See `member.rs:70-112` for accessor methods.
+
+## Member
+
+The `Member` struct contains metadata about an association:
+
+```rust
+pub struct Member {
+    pub identifier: MemberIdentifier,
+    pub added_by_entity: Option<MemberIdentifier>,
+    pub client_timestamp_ns: Option<u64>,
+    pub added_on_chain_id: Option<u64>,
+}
+
+impl Member {
+    pub fn new(
+        identifier: MemberIdentifier,
+        added_by_entity: Option<MemberIdentifier>,
+        client_timestamp_ns: Option<u64>,
+        added_on_chain_id: Option<u64>,
+    ) -> Self;
+
+    pub fn kind(&self) -> MemberKind;
+}
+```
+
+See `member.rs:345-382` for the struct definition.
+
+### Member Hierarchy
+
+Members form a tree structure:
+
+```
+Recovery Wallet (0x1234...)
+├── Installation A (added by 0x1234...)
+├── Installation B (added by 0x1234...)
+└── Secondary Wallet (0x5678...)
+    ├── Installation C (added by 0x5678...)
+    └── Installation D (added by 0x5678...)
+```
+
+Query the hierarchy:
+
+```rust
+// Get children of a member
+let children = state.members_by_parent(&parent_identifier);
+
+// Check who added a member
+if let Some(added_by) = member.added_by_entity {
+    println!("Added by: {:?}", added_by);
+}
+```
+
+## Association Rules
+
+The system enforces specific rules for associations:
+
+### Allowed Associations
+
+| Existing Member | Can Add                        |
+|----------------|--------------------------------|
+| Wallet         | Wallet, Installation, Passkey  |
+| Installation   | Wallet, Passkey                |
+| Passkey        | Wallet, Installation, Passkey  |
+
+**Prohibited:** Installation cannot add another installation.
+
+See `association_log.rs:431-445` for the validation logic.
+
+### Signature Requirements
+
+| Member Kind   | Required Signature              |
+|--------------|----------------------------------|
+| Ethereum     | ERC-191, ERC-1271, LegacyDelegated |
+| Installation | InstallationKey (Ed25519)        |
+| Passkey      | P256 (WebAuthn)                  |
+
+See `association_log.rs:448-470` for signature validation.
+
+## SignatureRequest Builder
+
+The `SignatureRequestBuilder` provides a fluent API for creating identity updates:
+
+```rust
+pub struct SignatureRequestBuilder {
+    inbox_id: String,
+    client_timestamp_ns: u64,
+    actions: Vec<PendingIdentityAction>,
+}
+```
+
+See `builder.rs:48-52` for the struct definition.
+
+### Creating Requests
+
+#### Create Inbox
+
+```rust
+let signature_request = SignatureRequestBuilder::new(inbox_id)
+    .create_inbox(signer_identity, nonce)
+    .build();
+
+// Add wallet signature
+signature_request.add_signature(wallet_signature, scw_verifier).await?;
+
+// Build and publish
+let identity_update = signature_request.build_identity_update()?;
+api_client.publish_identity_update(identity_update).await?;
+```
+
+See `builder.rs:64-80` for the create_inbox method.
+
+#### Add Association
+
+```rust
+let signature_request = SignatureRequestBuilder::new(inbox_id)
+    .add_association(
+        new_member_identifier,
+        existing_member_identifier,
+    )
+    .build();
+
+// Both members must sign
+signature_request.add_signature(existing_member_sig, scw_verifier).await?;
+signature_request.add_signature(new_member_sig, scw_verifier).await?;
+```
+
+See `builder.rs:82-99` for the add_association method.
+
+#### Revoke Association
+
+```rust
+let signature_request = SignatureRequestBuilder::new(inbox_id)
+    .revoke_association(
+        recovery_address_signer,
+        revoked_member,
+    )
+    .build();
+
+// Only recovery address needs to sign
+signature_request.add_signature(recovery_signature, scw_verifier).await?;
+```
+
+See `builder.rs:101-117` for the revoke_association method.
+
+#### Change Recovery Address
+
+```rust
+let signature_request = SignatureRequestBuilder::new(inbox_id)
+    .change_recovery_address(
+        recovery_address_signer,
+        new_recovery_identifier,
+    )
+    .build();
+
+// Current recovery address must sign
+signature_request.add_signature(recovery_signature, scw_verifier).await?;
+```
+
+See `builder.rs:119-135` for the change_recovery_address method.
+
+### Chaining Actions
+
+Multiple actions can be combined in a single update:
+
+```rust
+let signature_request = SignatureRequestBuilder::new(inbox_id)
+    .create_inbox(wallet_ident, 0)
+    .add_association(
+        MemberIdentifier::installation(installation_key),
+        wallet_ident.into(),
+    )
+    .build();
+
+// All required signatures must be added
+```
+
+## SignatureRequest
+
+Once built, a `SignatureRequest` collects signatures before publishing:
+
+```rust
+pub struct SignatureRequest {
+    pending_actions: Vec<PendingIdentityAction>,
+    signature_text: String,
+    signatures: HashMap<MemberIdentifier, UnverifiedSignature>,
+    client_timestamp_ns: u64,
+    inbox_id: String,
+}
+```
+
+See `builder.rs:176-183` for the struct definition.
+
+### Managing Signatures
+
+```rust
+impl SignatureRequest {
+    /// Get list of missing signatures
+    pub fn missing_signatures(&self) -> Vec<&MemberIdentifier>;
+
+    /// Get missing address signatures (excludes installations)
+    pub fn missing_address_signatures(&self) -> Vec<&MemberIdentifier>;
+
+    /// Add a signature
+    pub async fn add_signature(
+        &mut self,
+        signature: UnverifiedSignature,
+        scw_verifier: impl SmartContractSignatureVerifier,
+    ) -> Result<(), SignatureRequestError>;
+
+    /// Add smart contract signature with automatic block number
+    pub async fn add_new_unverified_smart_contract_signature(
+        &mut self,
+        signature: NewUnverifiedSmartContractWalletSignature,
+        scw_verifier: impl SmartContractSignatureVerifier,
+    ) -> Result<(), SignatureRequestError>;
+
+    /// Check if all signatures are collected
+    pub fn is_ready(&self) -> bool;
+
+    /// Get the text that should be signed
+    pub fn signature_text(&self) -> String;
+
+    /// Build the final identity update
+    pub fn build_identity_update(self) -> Result<UnverifiedIdentityUpdate, SignatureRequestError>;
+
+    /// Get the inbox ID
+    pub fn inbox_id(&self) -> crate::InboxIdRef<'_>;
+}
+```
+
+See `builder.rs:200-312` for the implementation.
+
+### Signature Flow
+
+```rust
+// 1. Build request
+let mut signature_request = SignatureRequestBuilder::new(inbox_id)
+    .add_association(new_member, existing_member)
+    .build();
+
+// 2. Get signature text
+let text = signature_request.signature_text();
+
+// 3. Sign with wallet (external to LibXMTP)
+let wallet_sig = wallet.sign_message(text.as_bytes()).await?;
+
+// 4. Add signature to request
+signature_request.add_signature(
+    UnverifiedSignature::RecoverableEcdsa(
+        UnverifiedRecoverableEcdsaSignature::new(wallet_sig.into())
+    ),
+    scw_verifier,
+).await?;
+
+// 5. Check if ready
+if signature_request.is_ready() {
+    // 6. Build and publish
+    let identity_update = signature_request.build_identity_update()?;
+    api_client.publish_identity_update(identity_update).await?;
+}
+```
+
+## Identity Updates
+
+### Update Actions
+
+Each action modifies the association state:
+
+#### CreateInbox
+
+```rust
+pub struct CreateInbox {
+    pub nonce: u64,
+    pub account_identifier: Identifier,
+    pub initial_identifier_signature: VerifiedSignature,
+}
+```
+
+See `association_log.rs:69-75` for the struct definition.
+
+**Rules:**
+- Can only be applied to a non-existent state
+- Signature must match the account identifier
+- Legacy signatures only allowed with nonce 0
+
+#### AddAssociation
+
+```rust
+pub struct AddAssociation {
+    pub new_member_signature: VerifiedSignature,
+    pub new_member_identifier: MemberIdentifier,
+    pub existing_member_signature: VerifiedSignature,
+}
+```
+
+See `association_log.rs:116-122` for the struct definition.
+
+**Rules:**
+- Both members must sign
+- Existing member must be in current state or be recovery address
+- New member signature must match new member identifier
+- Installation cannot add installation
+- Legacy signatures only with nonce 0 inboxes
+
+#### RevokeAssociation
+
+```rust
+pub struct RevokeAssociation {
+    pub recovery_identifier_signature: VerifiedSignature,
+    pub revoked_member: MemberIdentifier,
+}
+```
+
+See `association_log.rs:220-224` for the struct definition.
+
+**Rules:**
+- Only recovery address can revoke
+- Cannot use legacy signatures
+- Revokes member and all child installations
+- Idempotent (can revoke already-revoked member)
+
+#### ChangeRecoveryIdentity
+
+```rust
+pub struct ChangeRecoveryIdentity {
+    pub recovery_identifier_signature: VerifiedSignature,
+    pub new_recovery_identifier: Identifier,
+}
+```
+
+See `association_log.rs:280-284` for the struct definition.
+
+**Rules:**
+- Only current recovery address can change
+- Cannot use legacy signatures
+- Does not revoke old recovery address (still in state)
+
+### Applying Updates
+
+```rust
+use xmtp_id::associations::{apply_update, get_state};
+
+// Apply single update
+let new_state = apply_update(initial_state, update)?;
+
+// Apply multiple updates
+let updates: Vec<IdentityUpdate> = /* ... */;
+let final_state = get_state(updates)?;
+```
+
+See `mod.rs:20-39` for the helper functions.
+
+### IdentityUpdate Structure
+
+```rust
+pub struct IdentityUpdate {
+    pub inbox_id: String,
+    pub client_timestamp_ns: u64,
+    pub actions: Vec<Action>,
+}
+
+pub enum Action {
+    CreateInbox(CreateInbox),
+    AddAssociation(AddAssociation),
+    RevokeAssociation(RevokeAssociation),
+    ChangeRecoveryIdentity(ChangeRecoveryIdentity),
+}
+```
+
+See `association_log.rs:360-366` and `association_log.rs:321-328` for the definitions.
+
+## AssociationStateDiff
+
+Track changes between two states:
+
+```rust
+pub struct AssociationStateDiff {
+    pub new_members: Vec<MemberIdentifier>,
+    pub removed_members: Vec<MemberIdentifier>,
+}
+
+impl AssociationStateDiff {
+    /// Get newly added installation IDs
+    pub fn new_installations(&self) -> Vec<Vec<u8>>;
+
+    /// Get removed installation IDs
+    pub fn removed_installations(&self) -> Vec<Vec<u8>>;
+}
+```
+
+See `state.rs:23-55` for the struct definition.
+
+### Computing Diffs
+
+```rust
+let old_state = /* ... */;
+let new_state = /* ... */;
+
+// Compute diff
+let diff = old_state.diff(&new_state);
+
+for member in diff.new_members {
+    println!("Added: {:?}", member);
+}
+
+for member in diff.removed_members {
+    println!("Removed: {:?}", member);
+}
+
+// Get just installations
+let added_installations = diff.new_installations();
+let removed_installations = diff.removed_installations();
+```
+
+See `state.rs:220-250` for the diff method.
+
+### Convert State to Diff
+
+```rust
+// Get all members as a diff (useful for initial state)
+let diff = state.as_diff();
+// new_members contains all current members
+// removed_members is empty
+```
+
+## Replay Protection
+
+The system prevents signature replay attacks:
+
+```rust
+impl AssociationState {
+    /// Check if signature has been seen
+    pub fn has_seen(&self, signature: &Vec<u8>) -> bool;
+
+    /// Add signatures to seen set
+    pub fn add_seen_signatures(&self, signatures: Vec<Vec<u8>>) -> Self;
+}
+```
+
+All signatures in an `IdentityUpdate` are automatically added to the seen set after successful application.
+
+See `state.rs:141-150` for the replay protection methods.
+
+## Smart Contract Wallets
+
+Smart contract wallets (SCW) require special handling:
+
+### Chain ID Binding
+
+SCW signatures are bound to a specific chain ID:
+
+```rust
+let signature = VerifiedSignature::new(
+    signer,
+    SignatureKind::Erc1271,
+    signature_bytes,
+    Some(chain_id),  // Chain ID required for SCW
+);
+```
+
+Once a member is added with a chain ID, subsequent signatures from that member must use the same chain ID.
+
+See `association_log.rs:472-484` for chain ID verification.
+
+### Block Number Verification
+
+SCW signatures need the block number for verification:
+
+```rust
+let mut signature = NewUnverifiedSmartContractWalletSignature {
+    account_id: wallet_address,
+    signature_bytes,
+    block_number: None,  // Will be auto-filled
+};
+
+signature_request
+    .add_new_unverified_smart_contract_signature(
+        signature,
+        scw_verifier,
+    )
+    .await?;
+```
+
+The system automatically fetches the current block number during verification.
+
+See `builder.rs:217-245` for SCW signature handling.
+
+## Error Handling
+
+```rust
+pub enum AssociationError {
+    /// Multiple CreateInbox actions
+    MultipleCreate,
+    
+    /// XID not yet created
+    NotCreated,
+    
+    /// Signature validation failed
+    Signature(SignatureError),
+    
+    /// Member type not allowed to add another type
+    MemberNotAllowed(MemberKind, MemberKind),
+    
+    /// Signer not in current state
+    MissingExistingMember,
+    
+    /// New member signature doesn't match identifier
+    NewMemberIdSignatureMismatch,
+    
+    /// Signature already used
+    Replay,
+    
+    /// Smart contract chain ID mismatch
+    ChainIdMismatch(u64, u64),
+    
+    // ... other variants
+}
+```
+
+See `association_log.rs:9-48` for all error types.
+
+## Best Practices
+
+1. **Validate before applying** - Check signatures and state before publishing updates
+2. **Use the builder pattern** - `SignatureRequestBuilder` ensures correct request structure
+3. **Collect all signatures** - Check `is_ready()` before publishing
+4. **Handle async signatures** - Wallet signatures may require user interaction
+5. **Respect association rules** - Installations cannot add installations
+6. **Track state diffs** - Use diffs for efficient member change tracking
+7. **Verify chain IDs** - Ensure SCW signatures use consistent chain IDs
+8. **Implement replay protection** - Always check `has_seen()` for signatures
+
+## Related Pages
+
+- [Overview](./overview.mdx) - Identity system concepts
+- [Inbox Management](./inbox.mdx) - Working with inboxes and installations
+
+## References
+
+- [XIP-46: Identity Association State](https://github.com/xmtp/XIPs/pull/53)
+- Source: `crates/xmtp_id/src/associations/`
+- Source: `crates/xmtp_mls/src/identity_updates.rs`

@@ -1,0 +1,416 @@
+---
+title: Node.js Bindings
+description: NAPI-RS bindings for JavaScript/TypeScript applications
+---
+
+The Node.js bindings provide native XMTP functionality for JavaScript and TypeScript applications using [NAPI-RS](https://napi.rs/). These bindings expose the core LibXMTP Rust library to Node.js with zero-copy data transfer and full async/await support.
+
+<Note>
+These bindings are not intended to be used directly. Use the [xmtp-js SDK](https://github.com/xmtp/xmtp-js) instead, which provides a higher-level API built on top of these bindings.
+</Note>
+
+## Installation
+
+The bindings are published to npm as `@xmtp/node-bindings`:
+
+```bash
+npm install @xmtp/node-bindings
+# or
+yarn add @xmtp/node-bindings
+```
+
+### Requirements
+
+- Node.js >= 22
+- Platform-specific native binaries are automatically downloaded during installation
+
+## Architecture
+
+The Node.js bindings use **NAPI-RS** to create high-performance native Node.js addons from Rust code.
+
+### Key Technologies
+
+- **NAPI-RS**: Rust framework for building Node.js addons
+- **Native Modules**: Platform-specific `.node` files containing compiled Rust code
+- **Type Definitions**: Auto-generated TypeScript `.d.ts` files
+- **Tokio Integration**: Async Rust code integrates with Node.js event loop
+
+### Code Organization
+
+The Rust source code follows a modular structure organized by domain:
+
+```
+src/
+├── lib.rs                 # Library entry point, ErrorWrapper utility
+├── client/                # Client struct and methods (split by concern)
+│   ├── mod.rs             # Client struct definition
+│   ├── create_client.rs   # Client creation and builder
+│   ├── consent_state.rs   # Consent management methods
+│   ├── signatures.rs      # Signature-related methods
+├── conversations/         # Conversations methods (list, create, stream)
+├── conversation/          # Conversation methods (split by concern)
+│   ├── mod.rs             # Conversation struct
+│   ├── group/             # Group-specific operations
+│   ├── dm.rs              # DM-specific operations
+├── content_types/         # Content type definitions
+│   ├── mod.rs             # ContentType enum and re-exports
+│   ├── text.rs, reaction.rs, reply.rs, attachment.rs
+├── messages/              # Message types and utilities
+└── [root-level files]     # Shared types, enums, and utils
+```
+
+### Error Handling
+
+Rust errors are converted to JavaScript errors using the `ErrorWrapper` utility:
+
+```rust
+use crate::ErrorWrapper;
+
+self.inner_client
+    .some_method()
+    .await
+    .map_err(ErrorWrapper::from)?;
+```
+
+### NAPI Attributes
+
+The bindings use NAPI-RS procedural macros to expose Rust to JavaScript:
+
+- `#[napi]` on struct/impl - exports to JavaScript as a class
+- `#[napi(object)]` - exports as a plain JavaScript object
+- `#[napi(getter)]` - exports as a property getter
+- `#[napi]` on method - exports as a class method
+
+## Basic Usage
+
+Here's a basic example of creating a client and sending a message:
+
+```typescript
+import { createClient, IdentifierKind } from '@xmtp/node-bindings'
+
+// Create a client
+const client = await createClient(
+  accountAddress,
+  signatureRequest => wallet.signMessage(signatureRequest),
+  {
+    dbPath: './xmtp-db',
+    apiUrl: 'https://grpc.dev.xmtp.network:443',
+  }
+)
+
+// Check if registered
+const isRegistered = client.isRegistered()
+console.log('Client registered:', isRegistered)
+
+// Get inbox ID
+const inboxId = client.inboxId()
+console.log('Inbox ID:', inboxId)
+
+// Create a group conversation
+const conversations = client.conversations()
+const group = await conversations.createGroup(
+  ['0x1234...', '0x5678...'],
+  { groupName: 'My Group' }
+)
+
+// Send a message
+await group.send({ text: 'Hello, XMTP!' })
+
+// Stream new messages
+const stream = await group.streamMessages()
+for await (const message of stream) {
+  console.log('New message:', message.content)
+}
+```
+
+## Development
+
+### Prerequisites
+
+For development, you need:
+
+- Rust toolchain (managed via Nix or rustup)
+- Node.js >= 22
+- Yarn package manager
+
+### Setup
+
+From the repository root:
+
+```bash
+# Enter Nix development shell
+nix develop .#node
+
+# Or use just commands (recommended)
+just node install
+```
+
+### Build Commands
+
+<CodeGroup>
+
+```bash Development Build
+# Build debug version with test utilities
+yarn build:test
+```
+
+```bash Release Build
+# Build optimized release version
+yarn build:release
+```
+
+```bash Using Just
+# Build release bindings (uses Nix automatically)
+just node build
+```
+
+</CodeGroup>
+
+### Linting and Formatting
+
+```bash
+# Run all linting (Rust + TypeScript)
+just node lint
+
+# Or run individually
+yarn lint:clippy    # Rust linting
+yarn lint:fmt       # Rust formatting check
+yarn format         # Format TypeScript with Prettier
+```
+
+## Testing
+
+### Running Tests
+
+Tests are written in TypeScript using [Vitest](https://vitest.dev/):
+
+```bash
+# Start local XMTP node (required)
+just backend up
+
+# Run tests
+just node test
+
+# Or using yarn
+yarn test
+```
+
+### Test Structure
+
+Tests are located in the `test/` directory:
+
+- `Client.test.ts` - Client creation and management
+- `Conversations.test.ts` - Listing and creating conversations
+- `Conversation.test.ts` - Sending messages, managing members
+- `EnrichedMessage.test.ts` - Message content types
+- `RemoteAttachmentEncryption.test.ts` - Attachment handling
+
+### Example Test
+
+```typescript
+import { describe, expect, it } from 'vitest'
+import { createClient, createUser } from '@test/helpers'
+import { IdentifierKind } from '../dist'
+
+describe('Client', () => {
+  it('should be registered after registration', async () => {
+    const user = createUser()
+    const client = await createRegisteredClient(user)
+    expect(client.isRegistered()).toBe(true)
+  })
+
+  it('should find inbox ID from address', async () => {
+    const user = createUser()
+    const client = await createRegisteredClient(user)
+    const inboxId = await client.getInboxIdByIdentity({
+      identifier: user.account.address,
+      identifierKind: IdentifierKind.Ethereum,
+    })
+    expect(inboxId).toBe(client.inboxId())
+  })
+})
+```
+
+## Package Information
+
+From `package.json`:
+
+```json
+{
+  "name": "@xmtp/node-bindings",
+  "version": "1.10.0-dev",
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "napi": {
+    "binaryName": "bindings_node"
+  }
+}
+```
+
+## Key Dependencies
+
+<Tabs>
+  <Tab title="Runtime">
+    - `napi` / `napi-derive` - Node.js FFI bindings
+    - `xmtp_mls` - Core MLS implementation
+    - `xmtp_db` - Database layer with encrypted SQLite
+    - `xmtp_proto` - Protocol buffer definitions
+    - `xmtp_api_grpc` - gRPC API client
+  </Tab>
+  <Tab title="Development">
+    - `@napi-rs/cli` - Build tooling for NAPI modules
+    - `vitest` - Test framework
+    - `typescript` - Type checking
+    - `prettier` - Code formatting
+    - `viem` - Ethereum utilities for testing
+  </Tab>
+</Tabs>
+
+## Advanced Patterns
+
+### BigInt for Timestamps
+
+Nanosecond timestamps use JavaScript BigInt to avoid precision loss:
+
+```typescript
+const message = await group.messages()[0]
+const timestamp = message.sentAtNs // BigInt
+console.log('Sent at:', timestamp.toString())
+```
+
+### Stream Handling
+
+Streams return async iterables:
+
+```typescript
+// Stream conversations
+const stream = await client.conversations().stream()
+for await (const conversation of stream) {
+  console.log('New conversation:', conversation.id())
+}
+
+// Stream messages
+const messageStream = await group.streamMessages()
+for await (const message of messageStream) {
+  console.log('New message:', message.content)
+}
+```
+
+### Content Types
+
+The bindings support various content types:
+
+```typescript
+// Text message
+await group.send({ text: 'Hello!' })
+
+// Reaction
+await group.send({
+  reaction: {
+    reference: messageId,
+    action: 'added',
+    schema: 'unicode',
+    content: '👍',
+  },
+})
+
+// Reply
+await group.send({
+  reply: {
+    reference: messageId,
+    content: { text: 'Thanks!' },
+  },
+})
+
+// Attachment
+await group.send({
+  attachment: {
+    filename: 'document.pdf',
+    mimeType: 'application/pdf',
+    data: fileBuffer,
+  },
+})
+```
+
+## Performance Considerations
+
+### Zero-Copy Data Transfer
+
+NAPI-RS enables zero-copy transfer for:
+
+- Buffer/Uint8Array data
+- Large strings
+- Binary protocol messages
+
+### Async Performance
+
+Rust async operations integrate with Node.js event loop:
+
+- No blocking of JavaScript thread
+- Efficient multi-threaded execution in Rust
+- Automatic backpressure handling for streams
+
+### Database Performance
+
+The bindings use encrypted SQLite with:
+
+- Connection pooling
+- Prepared statement caching
+- Write-ahead logging (WAL) mode
+
+## Troubleshooting
+
+### Module Not Found
+
+If you see "Cannot find module" errors:
+
+```bash
+# Rebuild native bindings
+yarn build:clean
+yarn build:release
+yarn build:finish
+```
+
+### Platform-Specific Issues
+
+Native binaries are platform-specific. Ensure you're using the correct binary for your OS:
+
+- `bindings_node.darwin-arm64.node` - macOS Apple Silicon
+- `bindings_node.darwin-x64.node` - macOS Intel
+- `bindings_node.linux-x64-gnu.node` - Linux x64
+- `bindings_node.win32-x64-msvc.node` - Windows x64
+
+### Database Errors
+
+If you encounter database errors:
+
+```typescript
+// Delete local database to start fresh
+import { rm } from 'fs/promises'
+await rm('./xmtp-db', { recursive: true, force: true })
+```
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="NAPI-RS Documentation" icon="book" href="https://napi.rs/">
+    Learn about the NAPI-RS framework
+  </Card>
+  <Card title="Source Code" icon="github" href="https://github.com/xmtp/libxmtp/tree/main/bindings/node">
+    View the bindings source code
+  </Card>
+  <Card title="XMTP-JS SDK" icon="code" href="https://github.com/xmtp/xmtp-js">
+    Use the high-level JavaScript SDK
+  </Card>
+  <Card title="Example Tests" icon="flask" href="https://github.com/xmtp/libxmtp/tree/main/bindings/node/test">
+    See real usage examples
+  </Card>
+</CardGroup>

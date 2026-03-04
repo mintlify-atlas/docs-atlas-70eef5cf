@@ -1,80 +1,429 @@
 ---
-title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+title: Quickstart
+description: Get started with LibXMTP in minutes - create a client, join a group, and send your first encrypted message
 ---
 
-## Get started in three steps
+This guide will walk you through the essential steps to integrate LibXMTP into your application and send your first encrypted message.
 
-Get your documentation site running locally and make your first customization.
+## Prerequisites
 
-### Step 1: Set up your local environment
+Before you begin, make sure you have:
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
+- A supported development environment (Node.js 22+, iOS/macOS, Android, or modern browser)
+- An Ethereum wallet address for identity authentication
+- Basic familiarity with async/await patterns
+
+## Quick start steps
+
+<Steps>
+  <Step title="Install the library">
+    Choose your platform and install LibXMTP using your package manager.
     
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
+    <Tabs>
+      <Tab title="Node.js">
+        <CodeGroup>
+        ```bash npm
+        npm install @xmtp/node-bindings
+        ```
+        
+        ```bash yarn
+        yarn add @xmtp/node-bindings
+        ```
+        
+        ```bash pnpm
+        pnpm add @xmtp/node-bindings
+        ```
+        </CodeGroup>
+      </Tab>
+      
+      <Tab title="iOS">
+        Add LibXMTP to your `Package.swift`:
+        
+        ```swift
+        dependencies: [
+          .package(url: "https://github.com/xmtp/libxmtp", from: "1.9.0")
+        ]
+        ```
+        
+        Or add it via Xcode: **File > Add Package Dependencies**
+      </Tab>
+      
+      <Tab title="Android">
+        Add to your `build.gradle`:
+        
+        ```kotlin
+        dependencies {
+          implementation("org.xmtp:android:1.9.0")
+        }
+        ```
+      </Tab>
+      
+      <Tab title="WASM">
+        ```bash npm
+        npm install @xmtp/wasm-bindings
+        ```
+        
+        <Note>
+          WASM bindings require browser support for OPFS or ephemeral storage.
+        </Note>
+      </Tab>
+    </Tabs>
+  </Step>
+  
+  <Step title="Create a client">
+    Initialize an XMTP client with your wallet credentials.
     
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
+    <Tabs>
+      <Tab title="Node.js">
+        ```typescript
+        import { Client } from '@xmtp/node-bindings'
+        
+        // Create a client with wallet authentication
+        const client = await Client.create(
+          accountAddress,
+          {
+            env: 'production',
+            dbPath: './xmtp.db'
+          }
+        )
+        
+        console.log('Client created with Inbox ID:', client.inboxId())
+        ```
+      </Tab>
+      
+      <Tab title="Swift">
+        ```swift
+        import XMTPiOS
+        
+        // Create client with wallet
+        let client = try await Client.create(
+          account: wallet,
+          options: .init(
+            api: .init(env: .production),
+            dbEncryptionKey: encryptionKey
+          )
+        )
+        
+        print("Client created with Inbox ID: \(client.inboxId)")
+        ```
+      </Tab>
+      
+      <Tab title="Kotlin">
+        ```kotlin
+        import org.xmtp.android.library.Client
+        
+        // Create client
+        val client = Client().create(
+          account = wallet,
+          options = ClientOptions(
+            api = ClientOptions.Api(
+              env = XMTPEnvironment.PRODUCTION
+            )
+          )
+        )
+        
+        println("Client created with Inbox ID: ${client.inboxId}")
+        ```
+      </Tab>
+    </Tabs>
     
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+    <Note>
+      The client manages your local database, identity state, and network connections. Each client is bound to a single Inbox ID and Installation ID.
+    </Note>
+    
+    <Info>
+      On first run, the client will register your installation with the XMTP network. This requires a wallet signature to prove ownership.
+    </Info>
+  </Step>
+  
+  <Step title="Create or join a group">
+    Start a new conversation or sync existing groups from the network.
+    
+    <Tabs>
+      <Tab title="Node.js">
+        ```typescript
+        // Sync existing groups from the network
+        await client.conversations.sync()
+        
+        // Create a new group
+        const group = await client.conversations.createGroup(
+          [member1Address, member2Address],
+          {
+            groupName: "Team Discussion",
+            groupImageUrl: "https://example.com/avatar.png",
+            groupDescription: "Our project coordination channel"
+          }
+        )
+        
+        console.log('Group created:', group.id())
+        
+        // List all conversations
+        const groups = await client.conversations.list()
+        console.log(`You have ${groups.length} conversations`)
+        ```
+      </Tab>
+      
+      <Tab title="Swift">
+        ```swift
+        // Sync existing groups
+        try await client.conversations.sync()
+        
+        // Create a new group
+        let group = try await client.conversations.newGroup(
+          with: [member1Address, member2Address],
+          permissions: .allMembers,
+          name: "Team Discussion",
+          imageUrlSquare: "https://example.com/avatar.png"
+        )
+        
+        print("Group created: \(group.id)")
+        ```
+      </Tab>
+      
+      <Tab title="Kotlin">
+        ```kotlin
+        // Sync existing groups
+        client.conversations.sync()
+        
+        // Create a new group
+        val group = client.conversations.newGroup(
+          listOf(member1Address, member2Address),
+          permissions = GroupPermissions.ALL_MEMBERS,
+          name = "Team Discussion",
+          imageUrlSquare = "https://example.com/avatar.png"
+        )
+        
+        println("Group created: ${group.id}")
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+  
+  <Step title="Send and receive messages">
+    Exchange end-to-end encrypted messages with group members.
+    
+    <Tabs>
+      <Tab title="Node.js">
+        ```typescript
+        // Send a text message
+        await group.send("Hello, team! 👋")
+        
+        // Send with optimistic sending (returns before confirmed)
+        await group.send("Quick update", { sendOptimistically: true })
+        
+        // Query recent messages
+        const messages = await group.findMessages({ limit: 10 })
+        messages.forEach(msg => {
+          console.log(`${msg.senderInboxId}: ${msg.content}`)
+        })
+        
+        // Stream new messages in real-time
+        const stream = await group.streamMessages()
+        for await (const message of stream) {
+          console.log('New message:', message.content)
+        }
+        ```
+      </Tab>
+      
+      <Tab title="Swift">
+        ```swift
+        // Send a message
+        try await group.send(content: "Hello, team! 👋")
+        
+        // Query messages
+        let messages = try await group.messages(limit: 10)
+        for message in messages {
+          print("\(message.senderInboxId): \(message.body)")
+        }
+        
+        // Stream new messages
+        for try await message in group.streamMessages() {
+          print("New message: \(message.body)")
+        }
+        ```
+      </Tab>
+      
+      <Tab title="Kotlin">
+        ```kotlin
+        // Send a message
+        group.send("Hello, team! 👋")
+        
+        // Query messages
+        val messages = group.messages(limit = 10)
+        messages.forEach { message ->
+          println("${message.senderInboxId}: ${message.body}")
+        }
+        
+        // Stream new messages
+        group.streamMessages().collect { message ->
+          println("New message: ${message.body}")
+        }
+        ```
+      </Tab>
+    </Tabs>
+    
+    <Accordion title="Example message output">
+      ```json
+      {
+        "id": "msg_abc123...",
+        "senderInboxId": "0x1234abcd...",
+        "senderInstallationId": "install_xyz789...",
+        "content": "Hello, team! 👋",
+        "sentAtNs": 1234567890000000,
+        "kind": "application",
+        "deliveryStatus": "published",
+        "contentType": {
+          "authorityId": "xmtp.org",
+          "typeId": "text",
+          "versionMajor": 1,
+          "versionMinor": 0
+        }
+      }
+      ```
+    </Accordion>
+  </Step>
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
+Now that you have LibXMTP running, explore more advanced features:
 
 <CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
+  <Card title="Managing groups" icon="users" href="/guides/managing-groups">
+    Add members, update metadata, and configure permissions
+  </Card>
+  <Card title="Content types" icon="message" href="/api/messages/content-types">
+    Send reactions, replies, attachments, and custom content
+  </Card>
+  <Card title="Permissions & policies" icon="shield-halved" href="/guides/permissions-and-policies">
+    Configure who can add members, send messages, and update groups
+  </Card>
+  <Card title="Consent management" icon="hand" href="/guides/consent-management">
+    Block unwanted conversations and manage spam
+  </Card>
 </CardGroup>
 
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+## Common patterns
+
+### Creating a direct message (DM)
+
+Direct messages are 1:1 conversations with exactly two members:
+
+```typescript
+const dm = await client.conversations.createDm(otherAddress)
+await dm.send("Hey! Want to collaborate on this?")
+```
+
+### Handling errors
+
+Always wrap LibXMTP operations in try-catch blocks:
+
+```typescript
+try {
+  const group = await client.conversations.createGroup([address1, address2])
+  await group.send("Welcome!")
+} catch (error) {
+  if (error.message.includes('not registered')) {
+    console.error('One or more addresses are not XMTP users')
+  } else {
+    console.error('Failed to create group:', error)
+  }
+}
+```
+
+### Syncing conversations
+
+Regularly sync to stay updated with network changes:
+
+```typescript
+// Sync all conversations
+await client.conversations.sync()
+
+// Sync a specific group
+await group.sync()
+```
+
+## Troubleshooting
+
+<AccordionGroup>
+  <Accordion title="Client creation fails with 'signature required'">
+    The first time a client is created, you need to provide a wallet signature to register your installation. Make sure your wallet is properly initialized and can sign messages.
+    
+    See [Creating Clients](/guides/creating-clients) for detailed registration flows.
+  </Accordion>
+  
+  <Accordion title="Messages not appearing immediately">
+    Messages may take a few seconds to propagate through the network. Use `group.sync()` to manually fetch new messages, or set up a message stream for real-time updates.
+  </Accordion>
+  
+  <Accordion title="Database permission errors">
+    Make sure the `dbPath` directory exists and is writable by your application. On mobile platforms, use the app's documents directory.
+  </Accordion>
+  
+  <Accordion title="Member not found errors when creating groups">
+    Users must have an active XMTP installation to be added to groups. They need to have created a client at least once. Check that addresses are valid XMTP users with `client.canMessage([address])`.
+  </Accordion>
+</AccordionGroup>
+
+## Complete example
+
+Here's a complete Node.js example that ties everything together:
+
+```typescript
+import { Client } from '@xmtp/node-bindings'
+
+async function main() {
+  // Create client
+  const client = await Client.create(
+    process.env.WALLET_ADDRESS,
+    {
+      env: 'production',
+      dbPath: './my-xmtp-db.db3'
+    }
+  )
+  
+  console.log('✅ Client created:', client.inboxId())
+  
+  // Sync existing conversations
+  await client.conversations.sync()
+  console.log('✅ Synced conversations')
+  
+  // Create a group
+  const group = await client.conversations.createGroup(
+    [process.env.MEMBER_1, process.env.MEMBER_2],
+    {
+      groupName: "My First Group",
+      groupDescription: "Learning LibXMTP"
+    }
+  )
+  
+  console.log('✅ Group created:', group.id())
+  
+  // Send a message
+  await group.send("Hello from LibXMTP! 🚀")
+  console.log('✅ Message sent')
+  
+  // Read messages
+  const messages = await group.findMessages({ limit: 5 })
+  console.log(`📬 Found ${messages.length} messages:`)
+  messages.forEach(msg => {
+    console.log(`  - ${msg.senderInboxId.slice(0, 10)}...: ${msg.content}`)
+  })
+  
+  // Start streaming new messages
+  console.log('👂 Listening for new messages...')
+  const stream = await group.streamMessages()
+  for await (const message of stream) {
+    console.log(`💬 New message from ${message.senderInboxId.slice(0, 10)}...: ${message.content}`)
+  }
+}
+
+main().catch(console.error)
+```
+
+## Resources
+
+- [Installation Guide](/installation) - Platform-specific setup instructions
+- [Core Concepts](/concepts/architecture) - Understand LibXMTP's architecture
+- [API Reference](/api/xmtp-mls) - Complete API documentation
+- [GitHub Repository](https://github.com/xmtp/libxmtp) - Source code and examples

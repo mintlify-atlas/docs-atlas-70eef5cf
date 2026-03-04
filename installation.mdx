@@ -1,0 +1,300 @@
+---
+title: Installation
+description: Install LibXMTP for Node.js, iOS, Android, and WebAssembly platforms.
+---
+
+# Installation
+
+LibXMTP is available for multiple platforms. Choose your platform to get started.
+
+<Tabs>
+  <Tab title="Node.js">
+    ## Node.js Installation
+
+    LibXMTP provides native Node.js bindings via NAPI-RS.
+
+    ### Requirements
+
+    - Node.js 22 or later
+    - npm, yarn, or pnpm
+
+    ### Install via npm
+
+    ```bash
+    npm install @xmtp/node-bindings
+    ```
+
+    ### Install via yarn
+
+    ```bash
+    yarn add @xmtp/node-bindings
+    ```
+
+    ### Install via pnpm
+
+    ```bash
+    pnpm add @xmtp/node-bindings
+    ```
+
+    ### Import in your project
+
+    ```typescript
+    import { createClient } from '@xmtp/node-bindings'
+    ```
+
+    <Note>
+    The Node.js bindings include pre-built native modules for common platforms. No compilation required.
+    </Note>
+
+  </Tab>
+
+  <Tab title="iOS">
+    ## iOS Installation
+
+    The XMTP iOS SDK is distributed via Swift Package Manager.
+
+    ### Requirements
+
+    - iOS 14.0+
+    - macOS 11.0+
+    - Xcode 13.0+
+    - Swift 6.1+
+
+    ### Swift Package Manager
+
+    Add LibXMTP to your `Package.swift` file:
+
+    ```swift
+    dependencies: [
+        .package(
+            url: "https://github.com/xmtp/libxmtp",
+            from: "1.9.0"
+        )
+    ]
+    ```
+
+    Then add it to your target dependencies:
+
+    ```swift
+    targets: [
+        .target(
+            name: "YourApp",
+            dependencies: [
+                .product(name: "XMTPiOS", package: "libxmtp")
+            ]
+        )
+    ]
+    ```
+
+    ### Xcode Integration
+
+    <Steps>
+      <Step title="Open your project in Xcode">
+        Launch Xcode and open your project.
+      </Step>
+      
+      <Step title="Add Package Dependency">
+        1. Select **File → Add Package Dependencies**
+        2. Enter the repository URL: `https://github.com/xmtp/libxmtp`
+        3. Choose version **1.9.0** or later
+      </Step>
+      
+      <Step title="Select Package Product">
+        Select **XMTPiOS** from the package products list.
+      </Step>
+      
+      <Step title="Import in your code">
+        ```swift
+        import XMTPiOS
+        ```
+      </Step>
+    </Steps>
+
+    ### Binary Targets
+
+    The iOS SDK includes pre-built binary targets:
+    - `LibXMTPSwiftFFI` - Static framework (default)
+    - `LibXMTPSwiftFFIDynamic` - Dynamic framework (optional)
+
+    <Note>
+    Binary frameworks are hosted on GitHub Releases and downloaded automatically by Swift Package Manager.
+    </Note>
+
+  </Tab>
+
+  <Tab title="Android">
+    ## Android Installation
+
+    The XMTP Android SDK is distributed via Maven Central.
+
+    ### Requirements
+
+    - Android SDK 23 (Marshmallow) or later
+    - Kotlin 1.8.0+
+    - Java 17
+
+    ### Gradle (Kotlin DSL)
+
+    Add to your `build.gradle.kts`:
+
+    ```kotlin
+    dependencies {
+        implementation("org.xmtp:android:1.9.0")
+    }
+    ```
+
+    ### Gradle (Groovy)
+
+    Add to your `build.gradle`:
+
+    ```gradle
+    dependencies {
+        implementation 'org.xmtp:android:1.9.0'
+    }
+    ```
+
+    ### Check Latest Version
+
+    Find the latest version on [Maven Central](https://central.sonatype.com/artifact/org.xmtp/android).
+
+    ### Import in your code
+
+    ```kotlin
+    import org.xmtp.android.library.Client
+    import org.xmtp.android.library.ClientOptions
+    ```
+
+    ### Proguard
+
+    The library includes consumer ProGuard rules automatically. No additional configuration needed.
+
+    <Note>
+    The Android SDK includes native `.so` libraries for all ABIs:
+    - arm64-v8a
+    - armeabi-v7a  
+    - x86_64
+    - x86
+    </Note>
+
+  </Tab>
+
+  <Tab title="WASM">
+    ## WebAssembly Installation
+
+    <Warning>
+    WASM bindings are not intended for direct use. Use the associated browser SDK instead.
+    </Warning>
+
+    ### Requirements
+
+    - Modern browser with WebAssembly support
+    - Build tools: emscripten, LLVM
+
+    ### Development Setup
+
+    If you're contributing to WASM bindings:
+
+    <Steps>
+      <Step title="Install emscripten">
+        ```bash
+        brew install emscripten
+        ```
+      </Step>
+      
+      <Step title="Install LLVM">
+        ```bash
+        brew install llvm
+        ```
+        Follow the instructions to add LLVM to your PATH.
+      </Step>
+      
+      <Step title="Install dependencies">
+        ```bash
+        cd bindings/wasm
+        yarn install
+        ```
+      </Step>
+      
+      <Step title="Build WASM bindings">
+        ```bash
+        yarn build
+        ```
+      </Step>
+    </Steps>
+
+    ### Browser SDK
+
+    For browser applications, use the higher-level browser SDK (coming soon) which wraps these WASM bindings.
+
+  </Tab>
+</Tabs>
+
+## Verify Installation
+
+After installing, verify your setup:
+
+<CodeGroup>
+
+```typescript Node.js
+import { createClient } from '@xmtp/node-bindings'
+
+console.log('LibXMTP Node.js bindings installed successfully!')
+```
+
+```swift iOS
+import XMTPiOS
+
+print("LibXMTP iOS SDK installed successfully!")
+```
+
+```kotlin Android
+import org.xmtp.android.library.Client
+
+println("LibXMTP Android SDK installed successfully!")
+```
+
+</CodeGroup>
+
+## Troubleshooting
+
+### Node.js Issues
+
+**Error: Cannot find module '@xmtp/node-bindings'**
+- Ensure you're using Node.js 22 or later
+- Try clearing node_modules and reinstalling: `rm -rf node_modules && npm install`
+
+**Native module loading errors**
+- The package includes pre-built binaries for common platforms
+- If your platform isn't supported, you may need to build from source
+
+### iOS Issues
+
+**Binary framework download fails**
+- Check your internet connection
+- Verify the GitHub release exists for your version
+- Try clearing Swift Package Manager cache: `rm -rf ~/Library/Caches/org.swift.swiftpm`
+
+**Build errors with "Cannot find 'XMTPiOS' in scope"**
+- Clean build folder: **Product → Clean Build Folder**
+- Reset package caches: **File → Packages → Reset Package Caches**
+
+### Android Issues
+
+**Dependency resolution fails**
+- Check that Maven Central is in your repositories list
+- Sync Gradle files: **File → Sync Project with Gradle Files**
+
+**Native library not found errors**
+- The SDK includes .so files for all ABIs
+- Check that you haven't excluded ABIs in your gradle configuration
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Quickstart Guide" icon="rocket" href="/quickstart">
+    Build your first XMTP application
+  </Card>
+  <Card title="API Reference" icon="book" href="/api-reference">
+    Explore the complete API documentation
+  </Card>
+</CardGroup>

@@ -1,0 +1,436 @@
+---
+title: Managing Groups
+description: Create groups, manage members, and work with direct messages in LibXMTP
+---
+
+Groups are the core of XMTP conversations. This guide covers creating groups, managing membership, and working with direct messages.
+
+## Creating Groups
+
+### Basic Group Creation
+
+Create a new group with default settings:
+
+```rust
+use xmtp_mls::groups::MlsGroup;
+
+// Create an empty group
+let group = client.create_group(None, None)?;
+```
+
+<Note>
+When you create a group, you are automatically:
+- Added as the only member
+- Designated as a super admin
+- Required to update installations before other operations
+</Note>
+
+### Create Group with Members
+
+Add members at creation time using wallet addresses:
+
+```rust
+use xmtp_id::associations::Identifier;
+
+let members = vec![
+    Identifier::Address("0x1234...".to_string()),
+    Identifier::Address("0x5678...".to_string()),
+];
+
+let group = client.create_group_with_identifiers(
+    &members,
+    None,  // Default permissions
+    None,  // Default metadata
+).await?;
+```
+
+Or use inbox IDs directly:
+
+```rust
+let inbox_ids = vec!["inbox_1", "inbox_2"];
+
+let group = client.create_group_with_members(
+    &inbox_ids,
+    None,  // permissions  
+    None,  // metadata
+).await?;
+```
+
+### Group Metadata
+
+Set group name, description, and image:
+
+```rust
+use xmtp_mls_common::group::GroupMetadataOptions;
+use xmtp_mls_common::group_mutable_metadata::MessageDisappearingSettings;
+
+let metadata = GroupMetadataOptions {
+    name: Some("My Group".to_string()),
+    description: Some("A group for friends".to_string()),
+    image_url_square: Some("https://example.com/image.jpg".to_string()),
+    pinned_frame_url: None,
+    message_disappearing_settings: None,
+};
+
+let group = client.create_group(None, Some(metadata))?;
+```
+
+## Managing Members
+
+<Steps>
+
+### Add Members
+
+Add members by wallet address:
+
+```rust
+use xmtp_id::associations::Identifier;
+
+let new_members = vec![
+    Identifier::Address("0xabcd...".to_string()),
+];
+
+let result = group.add_members_by_identity(&new_members).await?;
+
+println!("Added {} installations", result.added_members.len());
+```
+
+Or by inbox ID:
+
+```rust
+let inbox_ids = vec!["inbox_id_here"];
+let result = group.add_members(&inbox_ids).await?;
+```
+
+### Remove Members
+
+Remove members by wallet address:
+
+```rust
+let members_to_remove = vec![
+    Identifier::Address("0x1234...".to_string()),
+];
+
+group.remove_members_by_identity(&members_to_remove).await?;
+```
+
+Or by inbox ID:
+
+```rust
+group.remove_members(&["inbox_id"]).await?;
+```
+
+### List Members
+
+Get all current group members:
+
+```rust
+let members = group.members().await?;
+
+for member in members {
+    println!("Inbox: {}", member.inbox_id);
+    println!("  Installations: {}", member.installation_ids.len());
+    println!("  Permission: {:?}", member.permission_level);
+}
+```
+
+</Steps>
+
+## Direct Messages (DMs)
+
+DMs are a special type of group limited to two participants.
+
+### Find or Create DM
+
+The recommended approach automatically handles duplicate DMs:
+
+```rust
+use xmtp_id::associations::Identifier;
+
+// By wallet address
+let dm = client.find_or_create_dm_by_identity(
+    Identifier::Address("0x5678...".to_string()),
+    None,  // metadata options
+).await?;
+
+// By inbox ID
+let dm = client.find_or_create_dm(
+    "inbox_id_here",
+    None,
+).await?;
+```
+
+<Note>
+`find_or_create_dm` prevents duplicate DMs by:
+1. Checking for existing active DMs with the target inbox
+2. Returning the existing DM if found
+3. Creating a new DM only if none exists
+</Note>
+
+### DM Metadata
+
+Customize DM settings:
+
+```rust
+use xmtp_mls_common::group::DMMetadataOptions;
+
+let dm_metadata = DMMetadataOptions {
+    name: Some("Chat with Alice".to_string()),
+    image_url_square: Some("https://example.com/alice.jpg".to_string()),
+    message_disappearing_settings: None,
+};
+
+let dm = client.find_or_create_dm(
+    target_inbox_id,
+    Some(dm_metadata),
+).await?;
+```
+
+## Syncing Groups
+
+### Sync Welcomes
+
+Fetch groups you've been added to:
+
+```rust
+// Download and process welcome messages
+let new_groups = client.sync_welcomes().await?;
+
+println!("Joined {} new groups", new_groups.len());
+```
+
+### Sync Group Messages
+
+Update a specific group:
+
+```rust
+// Fetch new messages and membership updates
+group.sync().await?;
+```
+
+Sync all groups:
+
+```rust
+let groups = client.find_groups(GroupQueryArgs::default())?;
+let summary = client.sync_all_groups(groups).await?;
+
+println!("Synced {} groups", summary.num_groups_synced);
+```
+
+### Combined Sync
+
+Sync welcomes and all groups in one call:
+
+```rust
+use xmtp_db::consent_record::ConsentState;
+
+// Only sync allowed/unknown groups
+let summary = client.sync_all_welcomes_and_groups(
+    Some(vec![ConsentState::Allowed, ConsentState::Unknown])
+).await?;
+
+println!("Total groups synced: {}", summary.num_groups_synced);
+```
+
+## Querying Groups
+
+### Find Groups
+
+Query with filters:
+
+```rust
+use xmtp_db::group::{GroupQueryArgs, GroupMembershipState, ConversationType};
+
+let args = GroupQueryArgs::default()
+    .allowed_states(vec![GroupMembershipState::Allowed])
+    .conversation_types(vec![ConversationType::Group])  // Exclude DMs
+    .created_after_ns(Some(start_time))
+    .limit(Some(50));
+
+let groups = client.find_groups(args)?;
+```
+
+### Get Specific Group
+
+Look up by group ID:
+
+```rust
+let group = client.group(&group_id)?;
+```
+
+Get DM by target inbox:
+
+```rust
+let dm = client.dm_group_from_target_inbox(target_inbox_id)?;
+```
+
+### List Conversations
+
+Get conversations with last message:
+
+```rust
+use xmtp_db::group::GroupQueryOrderBy;
+
+let args = GroupQueryArgs::default()
+    .order_by(Some(GroupQueryOrderBy::LastActivity));
+
+let conversations = client.list_conversations(args)?;
+
+for conv in conversations {
+    println!("Group: {:?}", conv.group.group_id);
+    if let Some(msg) = conv.last_message {
+        println!("  Last message at: {}", msg.sent_at_ns);
+    }
+}
+```
+
+## Updating Group Metadata
+
+Group admins can update metadata:
+
+```rust
+// Update group name
+group.update_group_name("New Name".to_string()).await?;
+
+// Update description
+group.update_group_description("New description".to_string()).await?;
+
+// Update image
+group.update_group_image_url_square("https://new-image.jpg".to_string()).await?;
+```
+
+<Note>
+Metadata updates are governed by the group's permission policies. See [Permissions and Policies](/guides/permissions-and-policies) for details.
+</Note>
+
+## Group Properties
+
+<CodeGroup>
+
+```rust Rust
+// Basic properties
+let group_id = group.group_id.clone();
+let created_at = group.created_at_ns;
+let conversation_type = group.conversation_type;
+
+// Check if DM
+if conversation_type == ConversationType::Dm {
+    println!("This is a direct message");
+}
+
+// Get metadata
+let metadata = group.metadata()?;
+println!("Name: {:?}", metadata.group_name);
+println!("Description: {:?}", metadata.description);
+```
+
+```typescript TypeScript (Node.js)
+// Get group properties
+const groupId = conversation.id()
+const groupName = conversation.groupName()
+const description = conversation.groupDescription()
+const imageUrl = conversation.groupImageUrlSquare()
+
+// Check if DM
+const isDm = conversation.isDm()
+
+// Get members
+const members = await conversation.listMembers()
+console.log(`Group has ${members.length} members`)
+```
+
+</CodeGroup>
+
+## Error Handling
+
+Common group management errors:
+
+```rust
+use xmtp_mls::groups::GroupError;
+
+match group.add_members(&inbox_ids).await {
+    Ok(result) => {
+        println!("Added {} members", result.added_members.len());
+    }
+    Err(GroupError::UserLimitExceeded) => {
+        eprintln!("Group is full (max {} members)", MAX_GROUP_SIZE);
+    }
+    Err(GroupError::NotFound(NotFound::InboxIdForAddress(addr))) => {
+        eprintln!("Address {} not found on network", addr);
+    }
+    Err(GroupError::InvalidPermission) => {
+        eprintln!("You don't have permission to add members");
+    }
+    Err(e) => {
+        eprintln!("Failed to add members: {}", e);
+    }
+}
+```
+
+## Best Practices
+
+<Steps>
+
+### Keep Groups Synced
+
+Regularly sync to get updates:
+
+```rust
+// Before important operations
+group.sync().await?;
+
+// Or use periodic background sync
+let summary = client.sync_all_welcomes_and_groups(None).await?;
+```
+
+### Handle Member Updates
+
+Group members may add new installations:
+
+```rust
+// Update group to include new installations
+group.update_installations().await?;
+```
+
+### Use find_or_create for DMs
+
+Always use `find_or_create_dm` to prevent duplicates:
+
+```rust
+// Good - prevents duplicates
+let dm = client.find_or_create_dm(inbox_id, None).await?;
+
+// Avoid - can create duplicates
+// let dm = client.create_dm_by_inbox_id(inbox_id, None).await?;
+```
+
+### Verify Network Presence
+
+Check if addresses can receive messages:
+
+```rust
+let identifiers = vec![
+    Identifier::Address("0x1234...".to_string()),
+];
+
+let can_message = client.can_message(&identifiers).await?;
+
+for (identifier, can_msg) in can_message {
+    if !can_msg {
+        println!("Cannot message {}", identifier);
+    }
+}
+```
+
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Sending Messages" icon="paper-plane" href="/guides/sending-messages">
+    Send and receive messages in groups
+  </Card>
+  <Card title="Permissions and Policies" icon="shield" href="/guides/permissions-and-policies">
+    Configure who can perform actions in groups
+  </Card>
+</CardGroup>

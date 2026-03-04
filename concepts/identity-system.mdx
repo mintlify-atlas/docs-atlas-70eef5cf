@@ -1,0 +1,447 @@
+---
+title: Identity System  
+description: Understanding XMTP's multi-wallet identity system based on XIP-46
+---
+
+LibXMTP implements a flexible identity system based on [XIP-46](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-46-multi-wallet-identity.md) that allows users to link multiple wallets and installations to a single Inbox ID.
+
+## Core Concepts
+
+### Inbox ID
+
+An **Inbox ID** represents a single user identity in XMTP. It's derived from:
+
+```
+inbox_id = SHA256(CONCAT(wallet_address, nonce))
+```
+
+Where:
+- `wallet_address`: The initial wallet creating the inbox
+- `nonce`: A number (typically 0 for new users, or used for testing)
+
+Once created, an Inbox ID remains constant even as wallets and installations are added/removed.
+
+### Members and Identifiers
+
+An inbox has **members** which can be:
+
+#### Identifiers (Addresses)
+- **Ethereum addresses**: EOA wallets or smart contract wallets
+- **Passkeys**: WebAuthn-based authentication (future support)
+
+Identifiers can sign identity updates and control the inbox.
+
+#### Installations
+- Represent individual devices or clients
+- Each has a unique Ed25519 keypair
+- Can send/receive messages on behalf of the inbox
+- Cannot add other installations (only addresses can)
+
+```rust
+pub enum MemberIdentifier {
+    Ethereum(Ethereum),
+    Installation(Installation),
+    Passkey(Passkey),
+}
+
+pub enum Identifier {
+    Ethereum(Ethereum),
+    Passkey(Passkey),
+    // Note: Installation is NOT an Identifier
+}
+```
+
+### Association State
+
+The `AssociationState` represents the current members of an inbox at a point in time:
+
+```rust
+pub struct AssociationState {
+    inbox_id: String,
+    members: HashMap<MemberIdentifier, Member>,
+    recovery_identifier: Identifier,
+    seen_signatures: HashSet<Vec<u8>>,
+}
+```
+
+Each member has metadata:
+- `identifier`: The wallet address or installation key
+- `added_by_entity`: Which member added this member
+- `client_timestamp_ns`: When the member was added
+- `chain_id`: For smart contract wallets, which chain
+
+## Identity Actions
+
+Identity updates are composed of **actions** that modify association state:
+
+### CreateInbox
+
+Establishes a new inbox:
+
+```rust
+pub struct CreateInbox {
+    nonce: u64,
+    account_identifier: Identifier,
+    initial_identifier_signature: VerifiedSignature,
+}
+```
+
+- Must be the **first action** for a new inbox
+- `account_identifier` becomes the **recovery identifier**
+- Signature must be from the account creating the inbox
+- Inbox ID is derived: `SHA256(account_identifier + nonce)`
+
+### AddAssociation  
+
+Links a new wallet or installation:
+
+```rust
+pub struct AddAssociation {
+    new_member_identifier: MemberIdentifier,
+    new_member_signature: VerifiedSignature,
+    existing_member_signature: VerifiedSignature,
+}
+```
+
+**Rules**:
+- `existing_member_signature` must be from a current inbox member
+- `new_member_signature` must match `new_member_identifier`
+- Installations **cannot add other installations** (only addresses can)
+- Both signatures must be on the same signature text
+
+<Warning>
+An installation can add a wallet, but an installation cannot add another installation. Only addresses (wallets) can add installations.
+</Warning>
+
+### RevokeAssociation
+
+Removes a member from the inbox:
+
+```rust
+pub struct RevokeAssociation {
+    recovery_identifier_signature: VerifiedSignature,
+    revoked_member: MemberIdentifier,
+}
+```
+
+**Rules**:
+- Only the **recovery identifier** can revoke members
+- Revoking a member also revokes all its "children" (members it added)
+- Example: Revoking a wallet also revokes all installations it added
+- Cannot revoke the recovery identifier itself
+
+### ChangeRecoveryIdentity
+
+Updates the recovery address:
+
+```rust
+pub struct ChangeRecoveryIdentity {
+    new_recovery_identifier: Identifier,
+    recovery_identifier_signature: VerifiedSignature,
+}
+```
+
+- Only the **current** recovery identifier can change it
+- After changing, the old recovery identifier loses special privileges
+- The old address remains a member unless explicitly revoked
+
+## Identity Updates
+
+Actions are grouped into **IdentityUpdates** and published to the network:
+
+```rust
+pub struct IdentityUpdate {
+    client_timestamp_ns: u64,
+    inbox_id: String,
+    actions: Vec<Action>,
+}
+```
+
+Multiple actions in a single update are **atomic**: either all succeed or all fail.
+
+### Building Identity Updates
+
+Use the `SignatureRequestBuilder`:
+
+```rust
+let signature_request = SignatureRequestBuilder::new(inbox_id)
+    .create_inbox(wallet_identifier, nonce)
+    .add_association(installation_key, wallet_identifier)
+    .build();
+
+// Collect signatures
+signature_request.add_signature(wallet_signature, scw_verifier).await?;
+signature_request.add_signature(installation_signature, scw_verifier).await?;
+
+// Build final update
+let identity_update = signature_request.build_identity_update()?;
+```
+
+The builder:
+1. Collects unsigned actions
+2. Generates signature text for all actions
+3. Waits for required signatures
+4. Produces a complete `IdentityUpdate`
+
+## Signature Types
+
+XMTP supports multiple signature verification methods:
+
+### EOA Wallet Signatures (ERC-191)
+
+Externally Owned Accounts use ECDSA:
+
+```rust
+pub enum SignatureKind {
+    Erc191, // Standard Ethereum signed message
+    // ...
+}
+```
+
+**Verification**:
+1. Recover signer address from ECDSA signature
+2. Ensure recovered address matches expected address
+3. Signature is valid only for the exact signature text
+
+### Smart Contract Wallet Signatures (ERC-1271)
+
+Smart contract wallets validate signatures on-chain:
+
+```rust
+pub struct SmartContractWalletSignature {
+    account_id: String,
+    block_number: u64,
+    signature_bytes: Vec<u8>,
+}
+```
+
+**Challenges**:
+- Signature verification requires calling contract on blockchain
+- Contract logic can change over time
+- Signature may be valid at one block but invalid later
+
+**Solution**: Store `block_number` with signature
+- Verification happens at that specific block height
+- Uses [EIP-6492](https://eips.ethereum.org/EIPS/eip-6492) for pre-deployed contracts
+- Universal validator contract validates signatures
+
+<Info>
+Applications must provide RPC URLs for all supported blockchains when instantiating the client.
+</Info>
+
+### Legacy V2 Signatures
+
+XMTP V2 used a different identity model. For migration:
+
+```rust
+pub enum SignatureKind {
+    LegacyDelegated, // V2 identity key signature
+    // ...
+}
+```
+
+**Restrictions**:
+- Only usable on inbox with `nonce=0`
+- Can only be used **once** (globally per V2 key)
+- Replay protection prevents reuse on same inbox
+- Allows one-time migration from V2 to MLS
+
+<Warning>
+Legacy V2 keys may only create one association globally. After that, they cannot be used for any other identity operations.
+</Warning>
+
+**Validation**:
+1. Recover wallet address from signature on V2 public key
+2. Verify association challenge signature recovers to V2 public key  
+3. If chain validates, treat as if signed by wallet
+
+### Installation Key Signatures
+
+Installations sign with their Ed25519 private key:
+
+```rust
+pub enum SignatureKind {
+    InstallationKey, // Ed25519 signature
+    // ...
+}
+```
+
+Verification is straightforward: verify Ed25519 signature against public key.
+
+## Replay Protection
+
+To prevent signature reuse attacks:
+
+### Across Inboxes
+Inbox ID is included in all signature text, preventing cross-inbox replay.
+
+### Within Same Inbox  
+Raw signatures are stored in `seen_signatures`:
+
+```rust
+pub struct AssociationState {
+    // ...
+    seen_signatures: HashSet<Vec<u8>>,
+}
+```
+
+Any new action is checked against previously seen signatures. Reusing a signature fails with `AssociationError::Replay`.
+
+<Warning>
+For legacy V2 keys, the same signature bytes can only be used once globally across all actions.
+</Warning>
+
+## State Management
+
+### Computing State
+
+Association state is computed by applying updates sequentially:
+
+```rust
+pub fn get_state<Updates: AsRef<[IdentityUpdate]>>(
+    updates: Updates,
+) -> Result<AssociationState, AssociationError> {
+    let mut state = None;
+    for update in updates.as_ref().iter() {
+        let res = update.update_state(state, update.client_timestamp_ns);
+        state = Some(res?);
+    }
+    state.ok_or(AssociationError::NotCreated)
+}
+```
+
+Each update produces a new `AssociationState`. If any update fails, the entire operation fails.
+
+### State Diffs
+
+Compare two states to find membership changes:
+
+```rust
+pub struct AssociationStateDiff {
+    pub new_members: Vec<MemberIdentifier>,
+    pub removed_members: Vec<MemberIdentifier>,
+}
+
+let diff = old_state.diff(&new_state);
+let new_installations = diff.new_installations(); // Filter to installation IDs
+```
+
+Used when updating group membership to match identity changes.
+
+## Smart Contract Wallet Verification
+
+The `SmartContractSignatureVerifier` trait abstracts verification:
+
+```rust
+pub trait SmartContractSignatureVerifier {
+    async fn is_valid_signature(
+        &self,
+        account_id: String,
+        hash: [u8; 32],
+        signature: Vec<u8>,
+        block_number: Option<u64>,
+    ) -> Result<bool, SignatureError>;
+}
+```
+
+**Implementations**:
+- `ChainRpcVerifier`: Validates via EVM RPC calls
+- `RemoteSignatureVerifier`: Delegates to XMTP's validation service
+- `MockSmartContractSignatureVerifier`: For testing
+
+Applications choose based on their needs (decentralization vs. simplicity).
+
+## Chain ID Binding
+
+For smart contract wallets, signatures are bound to a specific chain:
+
+```rust
+pub struct VerifiedSignature {
+    pub signer: MemberIdentifier,
+    pub kind: SignatureKind,
+    pub raw_bytes: Vec<u8>,
+    pub chain_id: Option<u64>, // Required for Erc1271
+}
+```
+
+A signature from the same contract address but different chain ID is rejected:
+
+```rust
+Err(AssociationError::ChainIdMismatch(expected, actual))
+```
+
+This prevents replay attacks across chains with the same contract address.
+
+## Client Integration
+
+The `Identity` struct in `xmtp_mls` handles:
+
+```rust
+pub struct Identity {
+    pub inbox_id: String,
+    pub installation_keys: XmtpInstallationCredential,
+    // ...
+}
+```
+
+**Key methods**:
+- `is_ready()`: Check if identity is registered
+- `sequence_id()`: Get current sequence for inbox
+- `generate_and_store_key_package()`: Create MLS key package
+- `rotate_and_upload_key_package()`: Refresh after use
+
+See [Client Lifecycle](/concepts/client-lifecycle) for registration flow.
+
+## Querying Identity State
+
+Clients can query association state:
+
+```rust
+// Get state for current inbox
+let state = client.inbox_state(refresh_from_network).await?;
+
+// Get state for multiple inboxes
+let states = client.inbox_addresses(
+    refresh_from_network,
+    vec![inbox_id_1, inbox_id_2],
+).await?;
+
+// Get installations for an inbox
+let installations = state.installation_ids();
+
+// Get all addresses (wallets)
+let addresses = state.identifiers();
+
+// Get recovery address
+let recovery = state.recovery_identifier();
+```
+
+## Security Considerations
+
+### Trust Model
+
+- Backend can return wrong information or hide revocations
+- No built-in key transparency (planned for future)
+- Clients should verify critical operations
+
+### Credential Validation
+
+Clients validate credentials by:
+1. Extracting `inbox_id` from MLS credential
+2. Resolving current association state for that inbox
+3. Ensuring installation key is a current member (not revoked)
+
+### Revocation Semantics
+
+Revoking an installation:
+- Does **not** immediately remove from existing groups
+- Groups updated on next sync (typically fast)
+- No protocol-level timeliness guarantee
+
+Applications should handle potential delay between revocation and group removal.
+
+## Related Concepts
+
+- [MLS Protocol](/concepts/mls-protocol) - How identity integrates with MLS
+- [Client Lifecycle](/concepts/client-lifecycle) - Registration process
+- [Groups and Conversations](/concepts/groups-and-conversations) - How identity affects group membership

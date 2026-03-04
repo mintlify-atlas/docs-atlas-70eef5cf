@@ -1,0 +1,472 @@
+---
+title: Sending Messages
+description: Send messages, work with content types, and handle message delivery in LibXMTP
+---
+
+This guide covers sending messages, working with different content types, and managing message delivery in LibXMTP groups.
+
+## Sending Text Messages
+
+### Basic Message Sending
+
+Send a simple text message:
+
+```rust
+use xmtp_mls::groups::send_message_opts::SendMessageOpts;
+use xmtp_content_types::text::TextCodec;
+use xmtp_content_types::ContentCodec;
+
+// Encode text content
+let text_content = TextCodec::encode("Hello, world!".to_string())?;
+let encoded_bytes = encoded_content_to_bytes(text_content)?;
+
+// Send the message
+let message_id = group.send_message(&encoded_bytes, SendMessageOpts::default()).await?;
+```
+
+<Note>
+Messages are sent as encoded content that specifies the content type. This allows receivers to properly decode and display the message.
+</Note>
+
+### Send Message Options
+
+Control message behavior with `SendMessageOpts`:
+
+```rust
+use xmtp_mls::groups::send_message_opts::SendMessageOptsBuilder;
+
+// Configure send options
+let opts = SendMessageOptsBuilder::default()
+    .should_push(true)  // Trigger push notifications
+    .build()?;
+
+let message_id = group.send_message(&encoded_bytes, opts).await?;
+```
+
+### Optimistic Sending
+
+Send messages without waiting for network confirmation:
+
+```rust
+// Message is stored locally and queued for sending
+let message_id = group.send_message_optimistic(
+    &encoded_bytes,
+    SendMessageOpts::default()
+)?;
+
+// Later, publish all pending messages
+group.publish_messages().await?;
+```
+
+<Warning>
+Optimistic messages are visible locally immediately but may fail to send. Always call `publish_messages()` to ensure delivery.
+</Warning>
+
+## Content Types
+
+LibXMTP supports multiple content types for rich messaging.
+
+### Text Content
+
+```rust
+use xmtp_content_types::text::TextCodec;
+
+let content = TextCodec::encode("Hello!".to_string())?;
+let bytes = encoded_content_to_bytes(content)?;
+
+group.send_message(&bytes, SendMessageOpts::default()).await?;
+```
+
+### Reactions
+
+Send reactions to messages:
+
+```rust
+use xmtp_content_types::reaction::{ReactionCodec, ReactionAction};
+use xmtp_proto::xmtp::mls::message_contents::content_types::ReactionV2;
+
+let reaction = ReactionV2 {
+    reference: hex::encode(&target_message_id),  // Message being reacted to
+    action: ReactionAction::Added as i32,
+    content: "👍".to_string(),
+    schema: 1,
+};
+
+let encoded = ReactionCodec::encode(reaction)?;
+let bytes = encoded_content_to_bytes(encoded)?;
+
+group.send_message(&bytes, SendMessageOpts::default()).await?;
+```
+
+### Replies
+
+Reply to specific messages:
+
+```rust
+use xmtp_content_types::reply::{ReplyCodec, Reply};
+
+let reply = Reply {
+    reference: hex::encode(&original_message_id),
+    content_type: Some(TextCodec::content_type()),
+    content: TextCodec::encode("Thanks!".to_string())?,
+};
+
+let encoded = ReplyCodec::encode(reply)?;
+let bytes = encoded_content_to_bytes(encoded)?;
+
+group.send_message(&bytes, SendMessageOpts::default()).await?;
+```
+
+### Delete Messages
+
+Delete your own messages or (as super admin) others' messages:
+
+```rust
+use xmtp_proto::xmtp::mls::message_contents::content_types::DeleteMessage;
+use xmtp_content_types::delete_message::DeleteMessageCodec;
+
+let delete_msg = DeleteMessage {
+    message_id: hex::encode(&message_id_to_delete),
+};
+
+let encoded = DeleteMessageCodec::encode(delete_msg)?;
+let bytes = encoded_content_to_bytes(encoded)?;
+
+let deletion_id = group.send_message(&bytes, SendMessageOpts::default()).await?;
+```
+
+Or use the helper method:
+
+```rust
+// Delete a message (validates permissions automatically)
+let deletion_id = group.delete_message(&message_id).await?;
+```
+
+## Reading Messages
+
+<Steps>
+
+### Query Messages
+
+Retrieve messages with filters:
+
+```rust
+use xmtp_db::group_message::MsgQueryArgs;
+
+let args = MsgQueryArgs::default()
+    .sent_after_ns(Some(start_time))
+    .sent_before_ns(Some(end_time))
+    .limit(Some(50));
+
+let messages = group.find_messages(&args)?;
+
+for msg in messages {
+    println!("From: {}", msg.sender_inbox_id);
+    println!("At: {}", msg.sent_at_ns);
+    // Decode msg.decrypted_message_bytes based on content_type
+}
+```
+
+### Get Enriched Messages
+
+Retrieve messages with reactions, replies, and deletion status:
+
+```rust
+let enriched_messages = group.find_enriched_messages(&args)?;
+
+for msg in enriched_messages {
+    println!("Message: {}", msg.id);
+    println!("Reactions: {}", msg.reactions.len());
+    
+    if msg.is_deleted {
+        println!("  [DELETED]");
+    }
+    
+    if let Some(reply_id) = msg.reply_to_message_id {
+        println!("  Reply to: {}", reply_id);
+    }
+}
+```
+
+### Get Single Message
+
+Look up by message ID:
+
+```rust
+// Get stored message
+let message = client.message(message_id.clone())?;
+
+// Get enriched message
+let enriched = client.message_v2(message_id)?;
+```
+
+</Steps>
+
+## Message Delivery Status
+
+### Check Delivery Status
+
+```rust
+use xmtp_db::group_message::DeliveryStatus;
+
+let messages = group.find_messages(&MsgQueryArgs::default())?;
+
+for msg in messages {
+    match msg.delivery_status {
+        DeliveryStatus::Published => {
+            println!("Message sent successfully");
+        }
+        DeliveryStatus::Unpublished => {
+            println!("Message pending (optimistic send)");
+        }
+        DeliveryStatus::Failed => {
+            println!("Message failed to send");
+        }
+    }
+}
+```
+
+### Publish Pending Messages
+
+Send all locally queued messages:
+
+```rust
+// Publish optimistic messages
+group.publish_messages().await?;
+
+// Check if any messages failed
+let failed_args = MsgQueryArgs::default()
+    .delivery_status(Some(vec![DeliveryStatus::Failed]));
+
+let failed = group.find_messages(&failed_args)?;
+if !failed.is_empty() {
+    eprintln!("Warning: {} messages failed to send", failed.len());
+}
+```
+
+## Advanced Usage
+
+### Custom Content Types
+
+Define your own content type:
+
+```rust
+use xmtp_proto::xmtp::mls::message_contents::EncodedContent;
+use prost::Message;
+
+// Your custom message structure
+#[derive(Message)]
+struct CustomMessage {
+    #[prost(string, tag = "1")]
+    pub custom_field: String,
+}
+
+// Encode as EncodedContent
+let custom = CustomMessage {
+    custom_field: "value".to_string(),
+};
+
+let mut content_bytes = Vec::new();
+custom.encode(&mut content_bytes)?;
+
+let encoded = EncodedContent {
+    r#type: Some(ContentTypeId {
+        authority_id: "your.authority".to_string(),
+        type_id: "custom-type".to_string(),
+        version_major: 1,
+        version_minor: 0,
+    }),
+    content: content_bytes,
+    ..Default::default()
+};
+
+let mut bytes = Vec::new();
+encoded.encode(&mut bytes)?;
+
+group.send_message(&bytes, SendMessageOpts::default()).await?;
+```
+
+### Message Count
+
+Count messages matching criteria:
+
+```rust
+let count = group.count_messages(&MsgQueryArgs::default())?;
+println!("Total messages: {}", count);
+
+// Count unread messages
+let unread_args = MsgQueryArgs::default()
+    .sent_after_ns(Some(last_read_timestamp));
+
+let unread_count = group.count_messages(&unread_args)?;
+```
+
+### Read Receipts
+
+Get last read times by sender:
+
+```rust
+let read_times = group.get_last_read_times()?;
+
+for (sender_inbox_id, timestamp) in read_times {
+    println!("{} last read at {}", sender_inbox_id, timestamp);
+}
+```
+
+## TypeScript (Node.js) Examples
+
+<CodeGroup>
+
+```typescript Send Text
+import { Conversation } from '@xmtp/node-sdk'
+
+// Send text message
+const messageId = await conversation.sendText('Hello, world!')
+
+// Send with optimistic delivery
+const messageId = await conversation.sendText('Hello!', true)
+
+// Publish pending messages
+await conversation.publishMessages()
+```
+
+```typescript List Messages
+// Get all messages
+const messages = await conversation.listMessages()
+
+for (const msg of messages) {
+  console.log(`From: ${msg.senderInboxId}`)
+  console.log(`Content: ${msg.content}`)
+  console.log(`Reactions: ${msg.reactions.length}`)
+}
+```
+
+```typescript Add/Remove Members
+// Add members by wallet address
+await conversation.addMembersByIdentity([{
+  identifier: '0x1234...',
+  identifierKind: IdentifierKind.Ethereum
+}])
+
+// Remove members
+await conversation.removeMembersByIdentity([{
+  identifier: '0x5678...',
+  identifierKind: IdentifierKind.Ethereum
+}])
+```
+
+</CodeGroup>
+
+## Error Handling
+
+```rust
+use xmtp_mls::groups::GroupError;
+
+match group.send_message(&bytes, opts).await {
+    Ok(message_id) => {
+        println!("Message sent: {}", hex::encode(message_id));
+    }
+    Err(GroupError::InvalidPermission) => {
+        eprintln!("You don't have permission to send messages");
+    }
+    Err(GroupError::NotFound(NotFound::MlsGroup)) => {
+        eprintln!("Group not found locally, try syncing");
+    }
+    Err(e) => {
+        eprintln!("Failed to send: {}", e);
+    }
+}
+```
+
+## Best Practices
+
+<Steps>
+
+### Use Optimistic Sending Carefully
+
+Optimistic sending improves UX but requires careful handling:
+
+```rust
+// Send optimistically
+let msg_id = group.send_message_optimistic(&bytes, opts)?;
+
+// Always publish later
+match group.publish_messages().await {
+    Ok(_) => { /* success */ }
+    Err(e) => {
+        // Handle failure - maybe retry or notify user
+        eprintln!("Failed to publish: {}", e);
+    }
+}
+```
+
+### Sync Before Reading
+
+Always sync to get latest messages:
+
+```rust
+group.sync().await?;
+let messages = group.find_messages(&MsgQueryArgs::default())?;
+```
+
+### Handle Large Message Lists
+
+Use pagination for performance:
+
+```rust
+let page_size = 50;
+let mut offset = 0;
+
+loop {
+    let args = MsgQueryArgs::default()
+        .limit(Some(page_size));
+        
+    let messages = group.find_messages(&args)?;
+    
+    if messages.is_empty() {
+        break;
+    }
+    
+    // Process messages
+    process_messages(messages);
+    
+    offset += page_size;
+}
+```
+
+### Decode Content Types Properly
+
+Always check content type before decoding:
+
+```rust
+use xmtp_db::group_message::ContentType;
+
+for msg in messages {
+    match msg.content_type {
+        ContentType::Text => {
+            let content = TextCodec::decode(msg.decrypted_message_bytes)?;
+            println!("Text: {}", content);
+        }
+        ContentType::Reaction => {
+            let reaction = ReactionV2::decode(msg.decrypted_message_bytes.as_slice())?;
+            println!("Reaction: {}", reaction.content);
+        }
+        _ => {
+            println!("Unknown content type");
+        }
+    }
+}
+```
+
+</Steps>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Permissions and Policies" icon="shield" href="/guides/permissions-and-policies">
+    Control who can send messages and perform actions
+  </Card>
+  <Card title="Consent Management" icon="hand" href="/guides/consent-management">
+    Manage user consent and block unwanted messages
+  </Card>
+</CardGroup>

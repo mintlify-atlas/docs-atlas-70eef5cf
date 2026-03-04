@@ -1,0 +1,329 @@
+---
+title: "XMTP API D14n"
+description: "Decentralized API implementation for XMTP"
+---
+
+## Overview
+
+The `xmtp_api_d14n` crate provides the decentralized (d14n) API implementation for XMTP, supporting both v3 (centralized MLS) and v4 (decentralized) protocol endpoints. This implementation follows the [XIP-49 Decentralized Backend](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-49-decentralized-backend.md) specification.
+
+## Source Location
+
+`crates/xmtp_api_d14n/`
+
+## Architecture
+
+The crate is organized into three main components:
+
+### File Hierarchy
+
+**endpoints/**
+- gRPC endpoints for v3 and decentralization protobuf interface
+- Divided into `v3/` (centralized) and `d14n/` (decentralized) modules
+
+**queries/**
+- Query implementations according to the XMTP Protocol Interface
+
+**protocol/**
+- XMTP d14n implementation according to the [d14n XIP](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-49-decentralized-backend.md#33-client-to-node-protocol)
+
+**config/**
+- Backend configuration for decentralized network
+
+## Decentralized (D14n) Endpoints
+
+The d14n endpoints implement the v4 decentralized protocol:
+
+### PublishClientEnvelopes
+
+Publishes client envelopes to the decentralized network.
+
+```rust
+pub struct PublishClientEnvelopes {
+    envelopes: Vec<ClientEnvelope>,
+}
+```
+
+**Endpoint:** `/xmtp.xmtpv4.payer_api.PayerApi/PublishClientEnvelopes`
+
+**Builder Example:**
+```rust
+let endpoint = PublishClientEnvelopes::builder()
+    .envelope(client_envelope_1)
+    .envelope(client_envelope_2)
+    .build()?;
+```
+
+### QueryEnvelopes
+
+Queries envelopes from the network with filtering options.
+
+```rust
+pub struct QueryEnvelopes {
+    envelopes: EnvelopesQuery,
+    limit: u32,
+}
+```
+
+**Endpoint:** `/xmtp.xmtpv4.message_api.ReplicationApi/QueryEnvelopes`
+
+**Builder Example:**
+```rust
+let endpoint = QueryEnvelopes::builder()
+    .envelopes(EnvelopesQuery {
+        topics: vec![topic_bytes],
+        originator_node_ids: vec![],
+        last_seen: Some(cursor),
+    })
+    .limit(100)
+    .build()?;
+```
+
+### QueryEnvelope (Single)
+
+Queries a single envelope topic.
+
+```rust
+pub struct QueryEnvelope {
+    topics: Vec<Topic>,
+    last_seen: GlobalCursor,
+    limit: u32,
+}
+```
+
+**Builder Example:**
+```rust
+let endpoint = QueryEnvelope::builder()
+    .topic(topic)
+    .last_seen(cursor)
+    .limit(50)
+    .build()?;
+```
+
+### SubscribeEnvelopes
+
+Subscribes to envelope updates in real-time.
+
+```rust
+pub struct SubscribeEnvelopes {
+    topics: Vec<Topic>,
+    last_seen: Option<GlobalCursor>,
+    originators: Vec<OriginatorId>,
+}
+```
+
+**Endpoint:** `/xmtp.xmtpv4.message_api.ReplicationApi/SubscribeEnvelopes`
+
+**Builder Example:**
+```rust
+let mut endpoint = SubscribeEnvelopes::builder()
+    .topic(topic_1)
+    .topic(topic_2)
+    .last_seen(Some(cursor))
+    .build()?;
+
+let stream = endpoint.subscribe(&client).await?;
+```
+
+### GetInboxIds
+
+Retrieves inbox IDs for given addresses.
+
+**Endpoint:** Defined in `endpoints/d14n/get_inbox_ids.rs`
+
+### GetNewestEnvelopes
+
+Fetches the newest envelopes from the network.
+
+**Endpoint:** Defined in `endpoints/d14n/get_newest_envelopes.rs`
+
+### HealthCheck
+
+Checks the health status of the decentralized network nodes.
+
+**Endpoint:** Defined in `endpoints/d14n/health_check.rs`
+
+### GetNodes
+
+Retrieves information about available network nodes.
+
+**Endpoint:** Defined in `endpoints/d14n/get_nodes.rs`
+
+### FetchD14nCutover
+
+Fetches the cutover information for transitioning to the decentralized network.
+
+**Endpoint:** Defined in `endpoints/d14n/fetch_d14n_cutover.rs`
+
+## V3 Endpoints
+
+The v3 endpoints provide compatibility with the centralized MLS Group Chat implementation:
+
+### Identity Endpoints (v3/identity/)
+
+**GetIdentityUpdatesV2**
+- Retrieves identity updates for inboxes
+- Source: `endpoints/v3/identity/get_identity_updates_v2.rs`
+
+**GetInboxIds**
+- Maps addresses to inbox IDs
+- Source: `endpoints/v3/identity/get_inbox_ids.rs`
+
+**PublishIdentityUpdate**
+- Publishes identity updates to the network
+- Source: `endpoints/v3/identity/publish_identity_update.rs`
+
+**VerifySmartContractWalletSignatures**
+- Verifies signatures from smart contract wallets
+- Source: `endpoints/v3/identity/verify_smart_contract_wallet_signatures.rs`
+
+### MLS Endpoints (v3/mls/)
+
+**FetchKeyPackages**
+- Fetches key packages for installations
+- Source: `endpoints/v3/mls/fetch_key_packages.rs`
+
+**GetNewestGroupMessage**
+- Retrieves the newest message for a group
+- Source: `endpoints/v3/mls/get_newest_group_message.rs`
+
+Additional v3 MLS endpoints are available in the `endpoints/v3/mls/` directory.
+
+## Endpoint Trait
+
+All endpoints implement the `Endpoint` trait from `xmtp_proto`:
+
+```rust
+pub trait Endpoint {
+    type Output;
+    fn grpc_endpoint(&self) -> Cow<'static, str>;
+    fn body(&self) -> Result<Bytes, BodyError>;
+}
+```
+
+### Usage with API Client
+
+**Unary Request:**
+```rust
+use xmtp_proto::api;
+
+let endpoint = QueryEnvelopes::builder()
+    .envelopes(query)
+    .build()?;
+
+let response = api::ignore(endpoint)
+    .query(&client)
+    .await?;
+```
+
+**Streaming Request:**
+```rust
+let mut endpoint = SubscribeEnvelopes::builder()
+    .topics(vec![topic])
+    .build()?;
+
+let mut stream = endpoint.subscribe(&client).await?;
+
+while let Some(envelope) = stream.next().await {
+    // Process envelope
+}
+```
+
+## Protocol Interface
+
+The d14n protocol implements the client-to-node protocol as specified in [XIP-49 Section 3.3](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-49-decentralized-backend.md#33-client-to-node-protocol).
+
+**Key Components:**
+- Client envelope authentication
+- Topic-based message routing
+- Global cursor-based pagination
+- Originator node filtering
+- Real-time envelope subscriptions
+
+## Configuration
+
+The `config` module provides backend configuration for connecting to the decentralized network:
+
+```rust
+use xmtp_api_d14n::config::BackendConfig;
+```
+
+Configuration includes:
+- Node discovery
+- Network topology
+- Connection parameters
+
+## Type Definitions
+
+Common types used throughout the d14n API:
+
+**Topics:**
+```rust
+use xmtp_proto::types::Topic;
+```
+
+**Cursors:**
+```rust
+use xmtp_proto::types::GlobalCursor;
+```
+
+**Envelopes:**
+```rust
+use xmtp_proto::xmtpv4::envelopes::ClientEnvelope;
+```
+
+**Originators:**
+```rust
+use xmtp_proto::types::OriginatorId;
+```
+
+## Builder Pattern
+
+All endpoints use the `derive_builder` crate for ergonomic construction:
+
+```rust
+let endpoint = EndpointName::builder()
+    .field1(value1)
+    .field2(value2)
+    .build()?;
+```
+
+Builders provide:
+- Type-safe construction
+- Optional field handling
+- Validation before building
+- Fluent API interface
+
+## Testing
+
+The crate includes test utilities and clients:
+
+**XmtpdClient** - Test client for d14n endpoints
+**GatewayClient** - Test client for gateway endpoints
+
+```rust
+use xmtp_api_grpc::test::{XmtpdClient, GatewayClient};
+
+let client = XmtpdClient::create().build()?;
+let gateway = GatewayClient::create().build()?;
+```
+
+## Migration from V3 to D14n
+
+The `FetchD14nCutover` endpoint helps coordinate the migration from v3 (centralized) to v4 (decentralized) infrastructure:
+
+1. Query cutover status
+2. Determine migration timeline
+3. Switch to decentralized endpoints
+4. Maintain backward compatibility during transition
+
+## Related XIPs
+
+- [XIP-49: Decentralized Backend](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-49-decentralized-backend.md)
+- [XIP-46: Multi-Wallet Identity](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-46-multi-wallet-identity.md)
+
+## Related Crates
+
+- `xmtp_api` - Core trait definitions
+- `xmtp_api_grpc` - gRPC client implementation
+- `xmtp_proto` - Protocol buffer definitions

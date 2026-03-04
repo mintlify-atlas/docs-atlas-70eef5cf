@@ -1,0 +1,306 @@
+---
+title: "xmtp_cryptography"
+description: "Cryptography primitives for XMTP"
+---
+
+## Overview
+
+The `xmtp_cryptography` crate provides low-level cryptographic primitives and utilities for the XMTP protocol. It includes signature verification, key generation, hashing utilities, and OpenMLS integration.
+
+## Installation
+
+```toml
+[dependencies]
+xmtp_cryptography = "*"
+```
+
+## Key Exports
+
+<ParamField path="Secret" type="tls_codec::SecretVLBytes">
+  Type alias for secret byte arrays with automatic zeroization on drop. Used for securely handling private keys and sensitive cryptographic material.
+</ParamField>
+
+<ParamField path="openmls" type="module">
+  Re-export of the OpenMLS crate for MLS protocol operations.
+</ParamField>
+
+## Core Modules
+
+### signature
+
+Signature creation and verification:
+- ECDSA signature recovery
+- Ethereum address validation
+- EIP-191 message signing
+- Signature format conversion
+
+### basic_credential
+
+OpenMLS basic credential implementation:
+- Identity credential management
+- Credential serialization/deserialization
+- Integration with MLS key packages
+
+### hash
+
+Cryptographic hashing utilities:
+- SHA-256 hashing
+- Message digest computation
+- Hash-based operations
+
+### rand
+
+Secure random number generation:
+- Cryptographically secure RNG
+- Random key generation
+- Nonce generation
+
+### ethereum
+
+Ethereum-specific cryptography:
+- Wallet signature verification
+- Address derivation
+- Chain-specific operations
+
+### configuration
+
+Cryptographic configuration constants:
+- Key lengths
+- Algorithm parameters
+- Protocol constants
+
+### utils
+
+Utility functions for cryptographic operations.
+
+## Main Types and Traits
+
+<ResponseField name="RecoverableSignature" type="enum">
+  Signature types that support public key recovery.
+  
+  **Variants:**
+  - `Eip191Signature(Vec<u8>)` - Ethereum EIP-191 signature with recovery ID
+  
+  **Methods:**
+  - `recover_address(message: &str) -> Result<String>` - Recover signer address
+</ResponseField>
+
+<ResponseField name="SignatureError" type="enum">
+  Errors that can occur during signature operations.
+  
+  **Variants:**
+  - `BadAddressFormat` - Invalid address format
+  - `BadSignatureFormat` - Invalid signature format
+  - `BadSignature` - Signature verification failed
+  - `Signer` - Signer error
+  - `Unknown` - Unknown error
+</ResponseField>
+
+<ResponseField name="IdentifierValidationError" type="enum">
+  Errors related to identifier validation.
+  
+  **Common cases:**
+  - Invalid Ethereum address format
+  - Invalid address length
+  - Unsupported identifier type
+</ResponseField>
+
+## Signature Functions
+
+<ResponseField name="h160addr_to_string" type="fn(Address) -> String">
+  Convert an Ethereum H160 address to a hex string with 0x prefix.
+  
+  ```rust
+  let address = Address::from([0u8; 20]);
+  let addr_str = h160addr_to_string(address);
+  // "0x0000000000000000000000000000000000000000"
+  ```
+</ResponseField>
+
+<ResponseField name="is_valid_ethereum_address" type="fn(&str) -> bool">
+  Check if a string is a valid Ethereum address (valid hex and length 20).
+  
+  ```rust
+  let valid = is_valid_ethereum_address("0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb");
+  assert!(valid);
+  ```
+</ResponseField>
+
+<ResponseField name="to_public_key" type="fn(&Secret) -> Result<[u8; 32]>">
+  Derive a public key from a private key for Ed25519.
+  
+  ```rust
+  use xmtp_cryptography::signature::to_public_key;
+  
+  let private_key: Secret = /* ... */;
+  let public_key = to_public_key(&private_key)?;
+  ```
+</ResponseField>
+
+## Usage Examples
+
+### Signature Verification
+
+```rust
+use xmtp_cryptography::signature::{
+    RecoverableSignature,
+    is_valid_ethereum_address,
+};
+
+// Verify an Ethereum signature
+let signature = RecoverableSignature::Eip191Signature(signature_bytes);
+let recovered_address = signature.recover_address("Message to sign")?;
+
+// Validate the recovered address
+if is_valid_ethereum_address(&recovered_address) {
+    println!("Valid signature from: {}", recovered_address);
+}
+```
+
+### Address Conversion
+
+```rust
+use xmtp_cryptography::signature::h160addr_to_string;
+use alloy::primitives::Address;
+
+// Convert address to string
+let address = Address::from([0x12, 0x34, /* ... */]);
+let address_string = h160addr_to_string(address);
+```
+
+### Working with Secret Keys
+
+```rust
+use xmtp_cryptography::Secret;
+use tls_codec::SecretVLBytes;
+
+// Create a secret (automatically zeroized on drop)
+let secret_bytes = vec![0u8; 32];
+let secret = Secret::from(secret_bytes);
+
+// Use the secret
+let public_key = to_public_key(&secret)?;
+
+// Secret is automatically zeroized when dropped
+```
+
+### Random Key Generation
+
+```rust
+use xmtp_cryptography::rand::generate_random_bytes;
+
+// Generate random bytes for a key
+let random_key: [u8; 32] = generate_random_bytes();
+```
+
+### Hashing Operations
+
+```rust
+use xmtp_cryptography::hash::sha256;
+
+// Compute SHA-256 hash
+let data = b"Hello, XMTP!";
+let hash = sha256(data);
+```
+
+### OpenMLS Integration
+
+```rust
+use xmtp_cryptography::openmls::prelude::*;
+
+// Use OpenMLS types and functions
+let credential = BasicCredential::new(identity_bytes)?;
+```
+
+## Configuration Constants
+
+From the `configuration` module:
+
+<ParamField path="ED25519_KEY_LENGTH" type="usize">
+  Length of Ed25519 keys in bytes (32).
+</ParamField>
+
+<ParamField path="SIGNATURE_LENGTH" type="usize">
+  Standard signature length for various algorithms.
+</ParamField>
+
+## Features
+
+<ParamField path="exposed-keys" type="feature">
+  Expose private keys in addition to public keys (use with caution).
+</ParamField>
+
+<ParamField path="test-utils" type="feature">
+  Testing utilities and mock implementations.
+</ParamField>
+
+## Platform Support
+
+- Native (all platforms)
+- WebAssembly (with getrandom support)
+  - Requires `wasm_js` feature for browser environments
+
+## Security Considerations
+
+### Secret Zeroization
+
+The `Secret` type automatically zeroizes memory on drop:
+
+```rust
+{
+    let secret = Secret::from(vec![1, 2, 3, 4]);
+    // Use secret
+} // Memory automatically zeroized here
+```
+
+### Random Number Generation
+
+Always use the provided RNG functions for cryptographic operations:
+
+```rust
+// Good - cryptographically secure
+let key = generate_random_bytes::<32>();
+
+// Bad - don't use std::random for crypto
+// let key = rand::random(); // ⚠️ NOT cryptographically secure
+```
+
+### Signature Validation
+
+Always validate addresses after signature recovery:
+
+```rust
+let address = signature.recover_address(message)?;
+
+if !is_valid_ethereum_address(&address) {
+    return Err(SignatureError::BadAddressFormat);
+}
+```
+
+## Error Handling
+
+```rust
+use xmtp_cryptography::signature::SignatureError;
+
+match signature.recover_address(message) {
+    Ok(addr) => println!("Recovered: {}", addr),
+    Err(SignatureError::BadSignatureFormat(_)) => {
+        eprintln!("Invalid signature format");
+    }
+    Err(SignatureError::BadSignature { addr }) => {
+        eprintln!("Signature verification failed for {}", addr);
+    }
+    Err(e) => eprintln!("Other error: {}", e),
+}
+```
+
+## Dependencies
+
+Key cryptographic dependencies:
+- `libcrux-ed25519` - Ed25519 operations
+- `ed25519-dalek` - EdDSA signatures
+- `openmls` - MLS protocol
+- `alloy` - Ethereum cryptography
+- `sha2` - SHA-256 hashing
+- `rand` - Secure random number generation
+- `zeroize` - Memory zeroization

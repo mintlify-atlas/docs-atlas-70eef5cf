@@ -1,0 +1,543 @@
+---
+title: Content Types
+description: Message content types supported by LibXMTP
+---
+
+## Overview
+
+LibXMTP uses a codec system to encode and decode different types of message content. Each content type has a unique identifier and version, following the format:
+
+```
+authority_id/type_id:version_major.version_minor
+```
+
+Example: `xmtp.org/text:1.0`
+
+## Standard content types
+
+All standard content types use `xmtp.org` as the authority ID.
+
+### Text
+
+Plain text messages with UTF-8 encoding.
+
+**Type ID:** `xmtp.org/text:1.0`
+
+**Structure:**
+```rust
+pub struct Text {
+    pub content: String,
+}
+```
+
+**Encoding (Node.js):**
+```typescript
+import { encodeText } from '@xmtp/node-bindings'
+
+const encoded = encodeText('Hello, world!')
+await conversation.send(encoded, { shouldPush: true })
+```
+
+**Decoding:**
+```typescript
+if (message.content.type === DecodedMessageContentType.Text) {
+  console.log(message.content.text)
+}
+```
+
+**Triggers push:** Yes
+
+---
+
+### Markdown
+
+Markdown-formatted text for rich content.
+
+**Type ID:** `xmtp.org/markdown:1.0`
+
+**Structure:**
+```rust
+pub struct Markdown {
+    pub content: String,
+}
+```
+
+**Encoding (Node.js):**
+```typescript
+import { encodeMarkdown } from '@xmtp/node-bindings'
+
+const encoded = encodeMarkdown('# Heading\n\n**Bold text**')
+await conversation.send(encoded, { shouldPush: true })
+```
+
+**Triggers push:** Yes
+
+---
+
+### Reaction
+
+Emoji or text reactions to messages.
+
+**Type ID:** `xmtp.org/reaction:2.0`
+
+**Structure:**
+```rust
+pub struct ReactionV2 {
+    pub reference: String,              // Message ID being reacted to
+    pub reference_inbox_id: String,     // Inbox ID of message author
+    pub action: ReactionAction,         // Added or Removed
+    pub content: String,                // Emoji or text content
+    pub schema: ReactionSchema,         // Unicode, Shortcode, or Custom
+}
+
+pub enum ReactionAction {
+    Unspecified = 0,
+    Added = 1,
+    Removed = 2,
+}
+
+pub enum ReactionSchema {
+    Unspecified = 0,
+    Unicode = 1,      // Standard emoji: 👍
+    Shortcode = 2,    // Shortcode format: :thumbsup:
+    Custom = 3,       // Custom reaction format
+}
+```
+
+**Encoding (Node.js):**
+```typescript
+import { encodeReaction, ReactionAction, ReactionSchema } from '@xmtp/node-bindings'
+
+const encoded = encodeReaction({
+  reference: messageId,
+  referenceInboxId: senderInboxId,
+  action: ReactionAction.Added,
+  content: '👍',
+  schema: ReactionSchema.Unicode
+})
+
+await conversation.send(encoded, { shouldPush: false })
+```
+
+**Fallback text:** `"Reacted with \"👍\" to an earlier message"`
+
+**Triggers push:** No
+
+**Legacy support:** Version 1.0 uses JSON encoding, automatically converted to v2
+
+---
+
+### Reply
+
+Threaded replies to previous messages.
+
+**Type ID:** `xmtp.org/reply:1.0`
+
+**Structure:**
+```rust
+pub struct Reply {
+    pub in_reply_to: Option<Box<DecodedMessage>>,  // Referenced message (enriched only)
+    pub content: Box<MessageBody>,                  // Reply content
+    pub reference_id: String,                       // Message ID being replied to
+}
+```
+
+**Encoding (Node.js):**
+```typescript
+import { encodeReply, encodeText } from '@xmtp/node-bindings'
+
+const replyContent = encodeText('Great point!')
+const encoded = encodeReply({
+  reference: originalMessageId,
+  referenceInboxId: originalSenderInboxId,
+  content: replyContent
+})
+
+await conversation.send(encoded, { shouldPush: true })
+```
+
+**Enrichment:** When using `listEnrichedMessages()`, the `in_reply_to` field is populated with the referenced message.
+
+**Fallback text:** `"Replied with \"Great point!\" to an earlier message"` (for text replies)
+
+**Triggers push:** Yes
+
+---
+
+### Attachment
+
+Direct file attachments with content embedded.
+
+**Type ID:** `xmtp.org/attachment:1.0`
+
+**Structure:**
+```rust
+pub struct Attachment {
+    pub filename: Option<String>,
+    pub mime_type: String,
+    pub content: Vec<u8>,  // Raw file bytes
+}
+```
+
+**Encoding (Node.js):**
+```typescript
+import { encodeAttachment } from '@xmtp/node-bindings'
+import { readFileSync } from 'fs'
+
+const fileData = readFileSync('document.pdf')
+const encoded = encodeAttachment({
+  filename: 'document.pdf',
+  mimeType: 'application/pdf',
+  content: fileData
+})
+
+await conversation.send(encoded, { shouldPush: true })
+```
+
+**Fallback text:** `"Can't display document.pdf. This app doesn't support attachments."`
+
+**Triggers push:** Yes
+
+**Note:** For large files, use RemoteAttachment instead.
+
+---
+
+### RemoteAttachment
+
+Reference to externally stored file.
+
+**Type ID:** `xmtp.org/remoteAttachment:1.0`
+
+**Structure:**
+```rust
+pub struct RemoteAttachment {
+    pub url: String,
+    pub content_digest: Vec<u8>,
+    pub secret: Vec<u8>,
+    pub salt: Vec<u8>,
+    pub nonce: Vec<u8>,
+    pub scheme: String,
+    pub filename: Option<String>,
+    pub content_length: Option<u64>,
+}
+```
+
+**Usage:** Upload file to external storage (IPFS, S3, etc.), then send reference.
+
+**Triggers push:** Yes
+
+---
+
+### MultiRemoteAttachment
+
+Multiple remote file references in a single message.
+
+**Type ID:** `xmtp.org/multiRemoteAttachment:1.0`
+
+**Structure:**
+```rust
+pub struct MultiRemoteAttachment {
+    pub attachments: Vec<RemoteAttachment>,
+}
+```
+
+**Triggers push:** Yes
+
+---
+
+### ReadReceipt
+
+Indicates message has been read.
+
+**Type ID:** `xmtp.org/readReceipt:1.0`
+
+**Structure:**
+```rust
+pub struct ReadReceipt {}
+```
+
+**Encoding (Node.js):**
+```typescript
+import { encodeReadReceipt } from '@xmtp/node-bindings'
+
+const encoded = encodeReadReceipt()
+await conversation.send(encoded, { shouldPush: false })
+```
+
+**Triggers push:** No
+
+**Note:** Empty payload, presence indicates receipt.
+
+---
+
+### TransactionReference
+
+Reference to blockchain transaction.
+
+**Type ID:** `xmtp.org/transactionReference:1.0`
+
+**Structure:**
+```rust
+pub struct TransactionReference {
+    pub chain_id: u64,
+    pub namespace: String,       // e.g., "eip155"
+    pub reference: String,       // Transaction hash
+    pub metadata: HashMap<String, String>,
+}
+```
+
+**Encoding (Node.js):**
+```typescript
+import { encodeTransactionReference } from '@xmtp/node-bindings'
+
+const encoded = encodeTransactionReference({
+  chainId: 1,
+  namespace: 'eip155',
+  reference: '0x123abc...',
+  metadata: { amount: '1.5 ETH' }
+})
+
+await conversation.send(encoded, { shouldPush: true })
+```
+
+**Triggers push:** Yes
+
+---
+
+### WalletSendCalls
+
+Wallet function call data (EIP-5792).
+
+**Type ID:** `xmtp.org/walletSendCalls:1.0`
+
+**Structure:**
+```rust
+pub struct WalletSendCalls {
+    pub version: String,
+    pub chain_id: String,
+    pub calls: Vec<SendCallsParams>,
+}
+```
+
+**Triggers push:** Yes
+
+---
+
+### GroupUpdated
+
+Group metadata change notification.
+
+**Type ID:** `xmtp.org/groupUpdated:1.0`
+
+**Structure:**
+```rust
+pub struct GroupUpdated {
+    pub metadata_field_changes: Vec<MetadataFieldChange>,
+}
+```
+
+**Triggers push:** No
+
+**Note:** Automatically sent when group name, image, or description changes.
+
+---
+
+### LeaveRequest
+
+Request to leave a group.
+
+**Type ID:** `xmtp.org/leaveRequest:1.0`
+
+**Structure:**
+```rust
+pub struct LeaveRequest {}
+```
+
+**Triggers push:** No
+
+---
+
+### Intent
+
+User intent or action.
+
+**Type ID:** `xmtp.org/intent:1.0`
+
+**Structure:**
+```rust
+pub struct Intent {
+    pub intent_type: String,
+    pub parameters: HashMap<String, String>,
+}
+```
+
+**Triggers push:** Varies
+
+---
+
+### Actions
+
+Interactive action buttons or options.
+
+**Type ID:** `xmtp.org/actions:1.0`
+
+**Structure:**
+```rust
+pub struct Actions {
+    pub actions: Vec<Action>,
+}
+```
+
+**Triggers push:** Varies
+
+---
+
+## System content types
+
+### DeletedMessage
+
+Placeholder for deleted messages (read-only).
+
+**Type ID:** `xmtp.org/deletedMessage:1.0`
+
+**Structure:**
+```rust
+MessageBody::DeletedMessage {
+    deleted_by: DeletedBy,
+}
+
+pub enum DeletedBy {
+    Sender,
+    Admin(String),  // Admin's inbox_id
+}
+```
+
+**Note:** Cannot be sent directly. Created automatically when messages are deleted.
+
+---
+
+## Custom content types
+
+If LibXMTP encounters an unknown content type, it wraps it as `MessageBody::Custom`:
+
+```rust
+MessageBody::Custom(EncodedContent)
+```
+
+**Accessing custom content:**
+```typescript
+if (message.content.type === DecodedMessageContentType.Custom) {
+  const encoded = message.content.custom
+  const contentType = encoded.type
+  const parameters = encoded.parameters
+  const content = encoded.content
+  
+  // Handle custom decoding
+}
+```
+
+## ContentCodec trait
+
+All content types implement the `ContentCodec` trait:
+
+```rust
+pub trait ContentCodec<T> {
+    fn content_type() -> ContentTypeId;
+    fn encode(content: T) -> Result<EncodedContent, CodecError>;
+    fn decode(content: EncodedContent) -> Result<T, CodecError>;
+    fn should_push() -> bool;
+}
+```
+
+### Implementing custom codecs
+
+```rust
+use xmtp_content_types::{ContentCodec, CodecError};
+use xmtp_proto::xmtp::mls::message_contents::{ContentTypeId, EncodedContent};
+
+pub struct CustomCodec;
+
+impl CustomCodec {
+    const AUTHORITY_ID: &'static str = "example.com";
+    pub const TYPE_ID: &'static str = "custom";
+    pub const MAJOR_VERSION: u32 = 1;
+    pub const MINOR_VERSION: u32 = 0;
+}
+
+impl ContentCodec<MyCustomType> for CustomCodec {
+    fn content_type() -> ContentTypeId {
+        ContentTypeId {
+            authority_id: Self::AUTHORITY_ID.to_string(),
+            type_id: Self::TYPE_ID.to_string(),
+            version_major: Self::MAJOR_VERSION,
+            version_minor: Self::MINOR_VERSION,
+        }
+    }
+    
+    fn encode(data: MyCustomType) -> Result<EncodedContent, CodecError> {
+        // Encode logic
+    }
+    
+    fn decode(content: EncodedContent) -> Result<MyCustomType, CodecError> {
+        // Decode logic
+    }
+    
+    fn should_push() -> bool {
+        true
+    }
+}
+```
+
+## Content type detection
+
+Check content type before accessing fields:
+
+```typescript
+switch (message.content.type) {
+  case DecodedMessageContentType.Text:
+    return message.content.text
+    
+  case DecodedMessageContentType.Reaction:
+    const reaction = message.content.reaction!
+    console.log(`${reaction.action}: ${reaction.content}`)
+    break
+    
+  case DecodedMessageContentType.Reply:
+    const reply = message.content.reply!
+    console.log(`Reply to ${reply.reference}:`, reply.content)
+    break
+    
+  case DecodedMessageContentType.Attachment:
+    const attachment = message.content.attachment!
+    saveFile(attachment.filename, attachment.content)
+    break
+    
+  case DecodedMessageContentType.DeletedMessage:
+    const deleted = message.content.deletedMessage!
+    if (deleted.deletedBy === 'sender') {
+      console.log('Message deleted by sender')
+    } else {
+      console.log(`Message deleted by admin: ${deleted.adminInboxId}`)
+    }
+    break
+}
+```
+
+## Fallback text
+
+Most content types include fallback text for clients that don't support them:
+
+```typescript
+if (!supportsContentType(message.contentType)) {
+  console.log(message.fallback)  // "Replied to an earlier message"
+}
+```
+
+Fallback text is automatically generated during encoding based on content type.
+
+## Source code references
+
+- Rust content types: `crates/xmtp_content_types/src/`
+- Node.js bindings: `bindings/node/src/content_types/`
+- Core codec trait: `crates/xmtp_content_types/src/lib.rs:94`
+- Message body enum: `crates/xmtp_mls/src/messages/decoded_message.rs:61`

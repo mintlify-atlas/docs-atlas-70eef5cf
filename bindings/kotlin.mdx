@@ -1,0 +1,632 @@
+---
+title: Kotlin Bindings
+description: UniFFI-based bindings for Android applications
+---
+
+The Kotlin bindings provide native XMTP functionality for Android applications using [Mozilla's UniFFI](https://mozilla.github.io/uniffi-rs/). These bindings expose the core LibXMTP Rust library to Kotlin through automatically generated FFI code and native libraries.
+
+<Note>
+These bindings are low-level FFI interfaces. For most Android development, use the [XMTP Android SDK](https://github.com/xmtp/xmtp-android) instead, which provides a Kotlin-native API built on top of these bindings.
+</Note>
+
+## Installation
+
+The bindings are distributed as part of the XMTP Android SDK. If you need to use the bindings directly:
+
+### Gradle
+
+Add to your `build.gradle.kts`:
+
+```kotlin
+dependencies {
+    implementation("org.xmtp:android:x.x.x")
+}
+```
+
+### Requirements
+
+- Android SDK 23+ (Android 6.0 Marshmallow)
+- Kotlin 1.9+
+- Java 17
+- Gradle 8.0+
+
+## Architecture
+
+The Kotlin bindings use **UniFFI** to generate Kotlin code from Rust, with native `.so` libraries for all Android ABIs.
+
+### Key Technologies
+
+- **UniFFI**: Mozilla's tool for generating foreign-language bindings from Rust
+- **JNI**: Java Native Interface for calling native code
+- **Native Libraries**: `.so` files for arm64-v8a, armeabi-v7a, x86_64, x86
+- **Tokio Integration**: Rust async runtime with Kotlin coroutine bridging
+
+### Binary Artifacts
+
+The bindings include native libraries for all Android ABIs:
+
+```
+jniLibs/
+├── arm64-v8a/      # 64-bit ARM (most modern devices)
+├── armeabi-v7a/    # 32-bit ARM (older devices)
+├── x86_64/         # 64-bit Intel (emulators)
+└── x86/            # 32-bit Intel (older emulators)
+```
+
+Plus generated Kotlin bindings:
+
+- `xmtpv3.kt` - Generated UniFFI bindings
+
+### Object Lifetimes
+
+UniFFI manages object lifetimes using `Arc<>` pointers:
+
+- Objects crossing the FFI boundary are wrapped in `Arc<>`
+- Kotlin's garbage collector automatically releases Rust objects
+- No manual memory management required
+- Objects implement `AutoCloseable` for explicit cleanup
+
+### Async and Concurrency
+
+The bindings use Tokio's multi-threaded runtime:
+
+- Kotlin `suspend` functions map to Rust async functions
+- Rust operations may resume on different threads after `await`
+- All exposed objects are `Send + Sync` for thread safety
+- Supports concurrent operations across multiple threads
+
+## Basic Usage
+
+Here's a basic example of creating a client and sending messages:
+
+```kotlin
+import org.xmtp.android.library.Client
+import org.xmtp.android.library.ClientOptions
+import org.xmtp.android.library.XMTPEnvironment
+import java.security.SecureRandom
+
+// Generate encryption key for local database
+val encryptionKey = SecureRandom().generateSeed(32)
+
+// Configure client options
+val options = ClientOptions(
+    api = ClientOptions.Api(
+        env = XMTPEnvironment.PRODUCTION,
+        isSecure = true,
+        appVersion = "MyApp/1.0.0"
+    ),
+    appContext = applicationContext,
+    dbEncryptionKey = encryptionKey
+)
+
+// Create a client with a wallet
+val client = Client.create(
+    account = wallet,
+    options = options
+)
+
+// Check if registered
+val isRegistered = client.isRegistered
+println("Client registered: $isRegistered")
+
+// Get inbox ID
+val inboxId = client.inboxId
+println("Inbox ID: $inboxId")
+
+// Create a group conversation
+val group = client.conversations.newGroup(
+    accountAddresses = listOf("0x1234...", "0x5678...")
+)
+
+// Send a message
+group.send("Hello, XMTP!")
+
+// Stream new messages
+group.streamMessages().collect { message ->
+    println("New message: ${message.body}")
+}
+```
+
+## Development
+
+### Prerequisites
+
+For development, you need:
+
+- Android Studio
+- Android SDK and NDK
+- Rust toolchain with Android targets
+- Cross-compilation tools
+
+The easiest way is using Nix:
+
+```bash
+# Enter Android development shell
+nix develop .#android
+```
+
+### Build Commands
+
+<CodeGroup>
+
+```bash Build Native Bindings
+# Build .so libraries + Kotlin bindings
+./sdks/android/dev/bindings
+
+# Or using just
+just android build
+```
+
+```bash Build SDK
+# Build the full Android SDK
+./sdks/android/dev/build
+
+# Or using Gradle
+./gradlew build
+```
+
+```bash Check Compilation
+# Check that everything compiles
+just android check
+```
+
+</CodeGroup>
+
+### Linting and Formatting
+
+```bash
+# Format Kotlin code
+./gradlew spotlessApply
+
+# Check formatting
+./gradlew spotlessCheck
+
+# Run Android lint
+./gradlew :library:lintDebug
+```
+
+Configuration:
+- Spotless is configured in `build.gradle.kts`
+- Follows Kotlin official style guide
+
+## Testing
+
+### Running Tests
+
+The Android bindings have two types of tests:
+
+<Tabs>
+  <Tab title="Unit Tests">
+    ```bash
+    # Run JVM unit tests (no emulator needed)
+    ./gradlew library:testDebug
+    ```
+
+    Located in `library/src/test/`
+  </Tab>
+  <Tab title="Instrumented Tests">
+    ```bash
+    # Start local backend
+    just backend up
+
+    # Run on emulator or device
+    ./gradlew connectedCheck
+    ```
+
+    Located in `library/src/androidTest/`
+  </Tab>
+</Tabs>
+
+### Test Structure
+
+Instrumented tests in `library/src/androidTest/`:
+
+- `ClientTest.kt` - Client creation and management
+- `ConversationsTest.kt` - Conversation operations
+- `GroupTest.kt` - Group messaging
+- `DmTest.kt` - Direct messages
+- `CodecTest.kt` - Content type codecs
+
+### Example Test
+
+```kotlin
+import androidx.test.ext.junit.runners.AndroidJUnit4
+import androidx.test.platform.app.InstrumentationRegistry
+import kotlinx.coroutines.runBlocking
+import org.junit.Assert.assertEquals
+import org.junit.Test
+import org.junit.runner.RunWith
+import org.xmtp.android.library.Client
+import org.xmtp.android.library.ClientOptions
+import org.xmtp.android.library.XMTPEnvironment
+import org.xmtp.android.library.messages.PrivateKeyBuilder
+import java.security.SecureRandom
+
+@RunWith(AndroidJUnit4::class)
+class ClientTest : BaseInstrumentedTest() {
+    @Test
+    fun testCanBeCreatedWithBundle() {
+        val key = SecureRandom().generateSeed(32)
+        val context = InstrumentationRegistry
+            .getInstrumentation()
+            .targetContext
+        val fakeWallet = PrivateKeyBuilder()
+        val options = ClientOptions(
+            ClientOptions.Api(XMTPEnvironment.LOCAL, false),
+            appContext = context,
+            dbEncryptionKey = key,
+        )
+        
+        val client = runBlocking {
+            Client.create(
+                account = fakeWallet,
+                options = options
+            )
+        }
+
+        val clientIdentity = fakeWallet.publicIdentity
+        runBlocking {
+            val canMessage = client.canMessage(
+                listOf(clientIdentity)
+            )
+            assert(canMessage[clientIdentity.identifier] == true)
+        }
+
+        val fromBundle = runBlocking {
+            Client.build(
+                clientIdentity,
+                options = options
+            )
+        }
+        assertEquals(client.inboxId, fromBundle.inboxId)
+    }
+}
+```
+
+## Key Dependencies
+
+<Tabs>
+  <Tab title="Runtime">
+    - `uniffi-xmtpv3` - Generated FFI bindings
+    - Native `.so` libraries - Rust code compiled for Android
+    - `kotlinx-coroutines` - Async/await support
+    - `androidx.lifecycle` - Android lifecycle integration
+  </Tab>
+  <Tab title="Development">
+    - `spotless` - Code formatting
+    - `junit` - Testing framework
+    - `androidx.test` - Android testing utilities
+    - `mockk` - Mocking library
+  </Tab>
+</Tabs>
+
+## Advanced Patterns
+
+### Database Encryption
+
+All local data is encrypted using a key you provide:
+
+```kotlin
+import android.security.keystore.KeyGenParameterSpec
+import android.security.keystore.KeyProperties
+import java.security.KeyStore
+import javax.crypto.KeyGenerator
+
+// Generate a secure key using Android Keystore
+fun generateEncryptionKey(): ByteArray {
+    val keyGenerator = KeyGenerator.getInstance(
+        KeyProperties.KEY_ALGORITHM_AES,
+        "AndroidKeyStore"
+    )
+    val keyGenSpec = KeyGenParameterSpec.Builder(
+        "xmtp_db_key",
+        KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+    )
+        .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+        .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+        .setKeySize(256)
+        .build()
+    
+    keyGenerator.init(keyGenSpec)
+    val secretKey = keyGenerator.generateKey()
+    return secretKey.encoded
+}
+
+// Use the key when creating a client
+val encryptionKey = generateEncryptionKey()
+val options = ClientOptions(
+    api = ClientOptions.Api(XMTPEnvironment.PRODUCTION, true),
+    appContext = applicationContext,
+    dbEncryptionKey = encryptionKey
+)
+```
+
+### Environment Configuration
+
+```kotlin
+// Production environment
+val prodOptions = ClientOptions(
+    api = ClientOptions.Api(
+        env = XMTPEnvironment.PRODUCTION,
+        isSecure = true,
+        appVersion = "MyApp/1.0.0"
+    ),
+    appContext = applicationContext,
+    dbEncryptionKey = encryptionKey
+)
+
+// Development environment
+val devOptions = ClientOptions(
+    api = ClientOptions.Api(
+        env = XMTPEnvironment.DEV,
+        isSecure = true,
+        appVersion = "MyApp/1.0.0-dev"
+    ),
+    appContext = applicationContext,
+    dbEncryptionKey = encryptionKey
+)
+
+// Local testing
+val localOptions = ClientOptions(
+    api = ClientOptions.Api(
+        env = XMTPEnvironment.LOCAL,
+        isSecure = false,
+        appVersion = "MyApp/Testing"
+    ),
+    appContext = applicationContext,
+    dbEncryptionKey = encryptionKey
+)
+```
+
+### Inbox State Management
+
+```kotlin
+// Get current inbox state
+val inboxState = client.inboxState(refreshFromNetwork = true)
+
+println("Inbox ID: ${inboxState.inboxId}")
+println("Installations: ${inboxState.installations.size}")
+println("Recovery address: ${inboxState.recoveryAddress}")
+
+// Get inbox states for multiple inboxes
+val inboxStates = Client.inboxStatesForInboxIds(
+    inboxIds = listOf(inboxId1, inboxId2),
+    api = ClientOptions.Api(
+        env = XMTPEnvironment.PRODUCTION,
+        isSecure = true
+    )
+)
+```
+
+### Streaming with Coroutines
+
+```kotlin
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
+import androidx.lifecycle.lifecycleScope
+
+// Stream conversations
+lifecycleScope.launch {
+    client.conversations.stream().collect { conversation ->
+        println("New conversation: ${conversation.id}")
+    }
+}
+
+// Stream messages in a conversation
+lifecycleScope.launch {
+    group.streamMessages().collect { message ->
+        println("From: ${message.senderInboxId}")
+        println("Content: ${message.body}")
+    }
+}
+
+// Stream with error handling
+lifecycleScope.launch {
+    try {
+        group.streamMessages().collect { message ->
+            handleNewMessage(message)
+        }
+    } catch (e: Exception) {
+        println("Stream error: ${e.message}")
+    }
+}
+```
+
+### Lifecycle Integration
+
+```kotlin
+import androidx.lifecycle.ViewModel
+import androidx.lifecycle.viewModelScope
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.launch
+
+class ChatViewModel(private val client: Client) : ViewModel() {
+    private val _messages = MutableStateFlow<List<DecodedMessage>>(emptyList())
+    val messages: StateFlow<List<DecodedMessage>> = _messages
+
+    fun startMessageStream(groupId: String) {
+        viewModelScope.launch {
+            val group = client.conversations.list()
+                .find { it.id == groupId }
+                ?: return@launch
+
+            group.streamMessages().collect { message ->
+                _messages.value = _messages.value + message
+            }
+        }
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        // Streams are automatically cancelled when viewModelScope is cancelled
+    }
+}
+```
+
+## Performance Considerations
+
+### Memory Management
+
+- UniFFI uses Arc for shared ownership between Kotlin and Rust
+- Kotlin GC automatically deallocates objects
+- Implement `AutoCloseable` for explicit cleanup
+
+```kotlin
+client.use { client ->
+    // Client is automatically closed when block exits
+    val group = client.conversations.newGroup(...)
+    group.send("Hello!")
+}
+```
+
+### Threading
+
+- Tokio runtime uses multiple threads for Rust operations
+- Kotlin coroutines integrate seamlessly
+- All callbacks are thread-safe
+
+### Database Performance
+
+- SQLite with encryption (SQLCipher)
+- Write-ahead logging (WAL) enabled
+- Connection pooling for concurrent access
+
+### ABI Filtering
+
+To reduce APK size, filter ABIs in `build.gradle.kts`:
+
+```kotlin
+android {
+    defaultConfig {
+        ndk {
+            // Only include 64-bit architectures
+            abiFilters += listOf("arm64-v8a", "x86_64")
+        }
+    }
+}
+```
+
+## Troubleshooting
+
+### Native Library Not Found
+
+If you see "UnsatisfiedLinkError: dlopen failed":
+
+```bash
+# Rebuild native bindings
+./sdks/android/dev/bindings
+
+# Clean and rebuild
+./gradlew clean build
+```
+
+### Database Errors
+
+If you encounter database errors:
+
+```kotlin
+// Delete local database
+val dbPath = File(client.dbPath)
+dbPath.deleteRecursively()
+
+// Create a new client
+val newClient = Client.create(
+    account = wallet,
+    options = options
+)
+```
+
+### Coroutine Context Required
+
+Many methods are suspend functions:
+
+```kotlin
+// ❌ Wrong - no coroutine context
+val client = Client.create(account = wallet, options = options)
+
+// ✅ Correct - in suspend function
+suspend fun setupClient(): Client {
+    return Client.create(
+        account = wallet,
+        options = options
+    )
+}
+
+// ✅ Correct - with runBlocking (avoid in production)
+val client = runBlocking {
+    Client.create(
+        account = wallet,
+        options = options
+    )
+}
+
+// ✅ Correct - with lifecycleScope
+lifecycleScope.launch {
+    val client = Client.create(
+        account = wallet,
+        options = options
+    )
+}
+```
+
+## Debugging
+
+Debugging FFI can be challenging:
+
+### Enable Logging
+
+```kotlin
+import uniffi.xmtpv3.FfiLogLevel
+import uniffi.xmtpv3.FfiLogRotation
+
+// Set up FFI logger
+val logger = object : FfiLogger {
+    override fun log(level: FfiLogLevel, message: String) {
+        when (level) {
+            FfiLogLevel.ERROR -> Log.e("XMTP", message)
+            FfiLogLevel.WARN -> Log.w("XMTP", message)
+            FfiLogLevel.INFO -> Log.i("XMTP", message)
+            FfiLogLevel.DEBUG -> Log.d("XMTP", message)
+            FfiLogLevel.TRACE -> Log.v("XMTP", message)
+        }
+    }
+}
+
+// Register logger
+ffiSetLogger(logger)
+```
+
+### Examine Database
+
+```bash
+# Find database location from logs
+adb logcat | grep "dbPath"
+
+# Pull database from device
+adb pull /data/data/com.yourapp/databases/xmtp.db3 .
+
+# Open with sqlcipher
+brew install sqlcipher
+sqlcipher xmtp.db3
+
+# Decrypt if needed
+sqlcipher> PRAGMA key = "hex_encoded_key";
+```
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="UniFFI Documentation" icon="book" href="https://mozilla.github.io/uniffi-rs/">
+    Learn about the UniFFI framework
+  </Card>
+  <Card title="Source Code" icon="github" href="https://github.com/xmtp/libxmtp/tree/main/bindings/mobile">
+    View the bindings source code
+  </Card>
+  <Card title="XMTP Android SDK" icon="code" href="https://github.com/xmtp/xmtp-android">
+    Use the high-level Kotlin SDK
+  </Card>
+  <Card title="Example Tests" icon="flask" href="https://github.com/xmtp/libxmtp/tree/main/sdks/android/library/src/androidTest">
+    See real usage examples
+  </Card>
+</CardGroup>

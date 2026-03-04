@@ -1,0 +1,116 @@
+---
+title: Introduction
+description: LibXMTP is a Rust library implementing the XMTP messaging protocol with MLS for secure, decentralized communication.
+---
+
+# LibXMTP
+
+LibXMTP is a shared library encapsulating the core functionality of the XMTP messaging protocol. It provides cryptographic operations, networking capabilities, and language bindings for multiple platforms.
+
+<Note>
+LibXMTP uses **MLS (Messaging Layer Security)** to provide end-to-end encrypted group messaging with forward secrecy and post-compromise security.
+</Note>
+
+## Project Status
+
+<Warning>
+LibXMTP is currently in **Alpha** status. Expect breaking changes as the protocol and library evolve.
+</Warning>
+
+## Key Features
+
+- **Cross-platform support**: Node.js, React Native, iOS, Android, and WebAssembly
+- **MLS protocol**: Industry-standard Messaging Layer Security for group messaging
+- **End-to-end encryption**: All messages are encrypted by default
+- **Decentralized**: No central server controls your conversations
+- **Multi-device sync**: Use XMTP across multiple installations
+- **Group messaging**: Create and manage group conversations with permissions
+- **Direct messaging**: 1:1 encrypted conversations
+
+## Architecture
+
+LibXMTP is built as a Rust workspace with bindings for multiple platforms:
+
+```
+libxmtp/
+├── crates/              # Core Rust implementation
+│   ├── xmtp_mls         # MLS protocol implementation
+│   ├── xmtp_api_grpc    # gRPC API client
+│   ├── xmtp_db          # Database layer
+│   └── xmtp_proto       # Protocol buffers
+├── bindings/
+│   ├── node             # Node.js bindings (NAPI)
+│   ├── mobile           # iOS/Android bindings (UniFFI)
+│   └── wasm             # WebAssembly bindings
+└── sdks/
+    ├── android          # Kotlin SDK
+    └── ios              # Swift SDK
+```
+
+## Supported Platforms
+
+<CardGroup cols={2}>
+  <Card title="Node.js" icon="node-js">
+    Native Node.js bindings via NAPI-RS for server and desktop applications
+  </Card>
+  <Card title="iOS" icon="apple">
+    Swift SDK with native performance using UniFFI bindings
+  </Card>
+  <Card title="Android" icon="android">
+    Kotlin SDK for Android apps with AAR distribution via Maven Central
+  </Card>
+  <Card title="WebAssembly" icon="globe">
+    Browser-based applications with WASM bindings
+  </Card>
+</CardGroup>
+
+## Use Cases
+
+- **Decentralized messaging apps**: Build secure chat applications
+- **Web3 notifications**: Send notifications to blockchain addresses
+- **DAO communication**: Enable secure group discussions for DAOs
+- **DeFi messaging**: Add messaging to DeFi protocols
+- **NFT community chat**: Create token-gated communities
+
+## Why LibXMTP?
+
+### Security First
+LibXMTP uses MLS, the IETF standard for secure group messaging, providing:
+- Forward secrecy
+- Post-compromise security
+- Authentication
+- Confidentiality
+
+### True Decentralization
+No central authority controls your messages or conversations. The protocol is designed to work with decentralized infrastructure.
+
+### Developer Friendly
+LibXMTP provides idiomatic bindings for each platform:
+- **JavaScript/TypeScript** for Node.js
+- **Swift** for iOS
+- **Kotlin** for Android
+- **WASM** for browsers
+
+### Production Ready
+Built with Rust for memory safety and performance, LibXMTP is designed for production use with:
+- Encrypted local storage
+- Efficient sync protocols
+- Battle-tested cryptography
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Installation" icon="download" href="/installation">
+    Install LibXMTP for your platform
+  </Card>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Build your first XMTP app
+  </Card>
+</CardGroup>
+
+## Resources
+
+- [GitHub Repository](https://github.com/xmtp/libxmtp)
+- [XMTP Documentation](https://docs.xmtp.org/)
+- [MLS Protocol Specification](https://messaginglayersecurity.rocks/)
+- [Contributing Guide](https://github.com/xmtp/libxmtp/blob/main/CONTRIBUTING.md)

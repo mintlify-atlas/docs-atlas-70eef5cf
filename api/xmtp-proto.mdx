@@ -1,0 +1,440 @@
+---
+title: "xmtp_proto"
+description: "XMTP protobuf definitions for Rust"
+---
+
+## Overview
+
+The `xmtp_proto` crate provides Rust types and traits for XMTP protocol buffer definitions. It includes gRPC client traits, message types, and API abstractions for both the MLS delivery service and identity service.
+
+## Installation
+
+```toml
+[dependencies]
+xmtp_proto = "*"
+```
+
+## Key Exports
+
+The crate exports protocol buffer types organized by API version:
+
+<ParamField path="identity_v1" type="module">
+  Identity API v1 protocol buffer types.
+  - `GetIdentityUpdatesRequest`
+  - `GetIdentityUpdatesResponse`
+  - `GetInboxIdsRequest`
+  - `PublishIdentityUpdateRequest`
+</ParamField>
+
+<ParamField path="mls_v1" type="module">
+  MLS API v1 protocol buffer types.
+  - `GroupMessage`
+  - `WelcomeMessage`
+  - `SendGroupMessagesRequest`
+  - `FetchKeyPackagesRequest`
+</ParamField>
+
+<ParamField path="FILE_DESCRIPTOR_SET" type="&'static [u8]">
+  Compiled protocol buffer descriptor set for reflection and dynamic operations.
+</ParamField>
+
+## Core Modules
+
+### api_client
+
+Client traits and implementations for XMTP APIs:
+- `XmtpMlsClient` - MLS delivery service operations
+- `XmtpIdentityClient` - Identity service operations
+- `XmtpMlsStreams` - Streaming APIs
+
+### types
+
+Core type definitions and conversions:
+- `GroupId` - Group identifier type
+- `InstallationId` - Installation identifier
+- `GroupMessage` - Group message wrapper
+- `WelcomeMessage` - Welcome message wrapper
+
+### codec
+
+Protocol buffer encoding/decoding utilities.
+
+### traits
+
+API client traits and abstractions:
+- `Client` - Base client trait
+- `Query` - Query operations
+- `QueryStream` - Streaming queries
+- `Endpoint` - API endpoint abstraction
+
+### proto_cache
+
+Caching for protocol buffer operations:
+- `GroupUpdateDeduper` - Deduplicate group updates
+
+## Main Types and Traits
+
+<ResponseField name="XmtpMlsClient" type="trait">
+  Trait for MLS delivery service operations.
+  
+  **Key Methods:**
+  - `upload_key_package()` - Upload key packages for others to add you
+  - `fetch_key_packages()` - Fetch key packages for inviting members
+  - `send_group_messages()` - Send messages to group
+  - `send_welcome_messages()` - Send welcome messages to new members
+  - `query_group_messages()` - Query group messages with pagination
+  - `query_welcome_messages()` - Query welcome messages
+</ResponseField>
+
+<ResponseField name="XmtpIdentityClient" type="trait">
+  Trait for identity service operations.
+  
+  **Key Methods:**
+  - `publish_identity_update()` - Publish identity association changes
+  - `get_inbox_ids()` - Get inbox IDs for addresses
+  - `get_identity_updates()` - Get identity update history
+  - `verify_smart_contract_wallet_signatures()` - Verify SCW signatures
+</ResponseField>
+
+<ResponseField name="XmtpMlsStreams" type="trait">
+  Trait for streaming operations.
+  
+  **Associated Types:**
+  - `GroupMessageStream` - Stream of group messages
+  - `WelcomeMessageStream` - Stream of welcome messages
+  
+  **Methods:**
+  - `subscribe_group_messages()` - Subscribe to group message stream
+  - `subscribe_welcome_messages()` - Subscribe to welcome message stream
+</ResponseField>
+
+<ResponseField name="XmtpApi" type="trait">
+  Combined trait for full API access.
+  
+  Automatically implemented for types that implement both `XmtpMlsClient` and `XmtpIdentityClient`.
+</ResponseField>
+
+<ResponseField name="BoxedXmtpApi" type="Box<dyn BoxableXmtpApi>">
+  Type-erased API client in a Box for dynamic dispatch.
+</ResponseField>
+
+<ResponseField name="ArcedXmtpApi" type="Arc<dyn BoxableXmtpApi>">
+  Type-erased API client in an Arc for shared ownership.
+</ResponseField>
+
+## Protocol Buffer Types
+
+### Group Messages
+
+<ParamField path="GroupMessage" type="struct">
+  Represents a message in a group conversation.
+  
+  **Fields:**
+  - `version: GroupMessageVersion` - Protocol version
+  - `data: Vec<u8>` - Encrypted message data
+  - `group_id: Vec<u8>` - Target group ID
+</ParamField>
+
+<ParamField path="SendGroupMessagesRequest" type="struct">
+  Request to send messages to groups.
+  
+  **Fields:**
+  - `messages: Vec<GroupMessage>` - Messages to send
+</ParamField>
+
+### Welcome Messages
+
+<ParamField path="WelcomeMessage" type="struct">
+  MLS welcome message for new group members.
+  
+  **Fields:**
+  - `version: WelcomeMessageVersion` - Protocol version
+  - `data: Vec<u8>` - Encrypted welcome data
+  - `installation_key: Vec<u8>` - Target installation
+</ParamField>
+
+<ParamField path="QueryWelcomeMessagesResponse" type="struct">
+  Response containing welcome messages.
+  
+  **Fields:**
+  - `messages: Vec<WelcomeMessage>` - Welcome messages
+  - `paging_info: Option<PagingInfo>` - Pagination state
+</ParamField>
+
+### Identity Updates
+
+<ParamField path="PublishIdentityUpdateRequest" type="struct">
+  Request to publish an identity update.
+  
+  **Fields:**
+  - `identity_update: IdentityUpdate` - The update to publish
+</ParamField>
+
+<ParamField path="GetIdentityUpdatesRequest" type="struct">
+  Request to fetch identity updates.
+  
+  **Fields:**
+  - `requests: Vec<GetIdentityUpdatesRequestItem>` - Inbox IDs to query
+  - `start_time_ns: u64` - Optional start time filter
+</ParamField>
+
+<ParamField path="GetIdentityUpdatesResponse" type="struct">
+  Response with identity update history.
+  
+  **Fields:**
+  - `responses: Vec<IdentityUpdateLog>` - Update logs per inbox
+</ParamField>
+
+## Usage Examples
+
+### Using the MLS Client Trait
+
+```rust
+use xmtp_proto::api_client::{XmtpMlsClient, XmtpApi};
+use xmtp_proto::mls_v1::GroupMessage;
+
+async fn send_message<C: XmtpMlsClient>(
+    client: &C,
+    message: GroupMessage,
+) -> Result<(), C::Error> {
+    client.send_group_messages(vec![message]).await?;
+    Ok(())
+}
+```
+
+### Querying Messages with Pagination
+
+```rust
+use xmtp_proto::api_client::{
+    XmtpMlsClient,
+    BatchQueryCommitLogRequest,
+};
+
+async fn fetch_messages<C: XmtpMlsClient>(
+    client: &C,
+    group_id: Vec<u8>,
+) -> Result<Vec<GroupMessage>, C::Error> {
+    let mut all_messages = Vec::new();
+    let mut cursor = None;
+    
+    loop {
+        let response = client.query_group_messages(
+            BatchQueryCommitLogRequest {
+                group_id: group_id.clone(),
+                cursor: cursor.clone(),
+            }
+        ).await?;
+        
+        all_messages.extend(response.messages);
+        
+        match response.paging_info {
+            Some(info) if info.has_more => {
+                cursor = info.cursor;
+            }
+            _ => break,
+        }
+    }
+    
+    Ok(all_messages)
+}
+```
+
+### Streaming Messages
+
+```rust
+use xmtp_proto::api_client::XmtpMlsStreams;
+use futures::StreamExt;
+
+async fn stream_messages<C: XmtpMlsStreams>(
+    client: &C,
+    group_ids: Vec<Vec<u8>>,
+) -> Result<(), C::Error> {
+    let mut stream = client.subscribe_group_messages(group_ids).await?;
+    
+    while let Some(message) = stream.next().await {
+        match message {
+            Ok(msg) => println!("Received message: {:?}", msg),
+            Err(e) => eprintln!("Stream error: {:?}", e),
+        }
+    }
+    
+    Ok(())
+}
+```
+
+### Publishing Identity Updates
+
+```rust
+use xmtp_proto::api_client::XmtpIdentityClient;
+use xmtp_proto::xmtp::identity::api::v1::{
+    PublishIdentityUpdateRequest,
+    IdentityUpdate,
+};
+
+async fn publish_update<C: XmtpIdentityClient>(
+    client: &C,
+    update: IdentityUpdate,
+) -> Result<(), C::Error> {
+    let request = PublishIdentityUpdateRequest {
+        identity_update: Some(update),
+    };
+    
+    client.publish_identity_update(request).await?;
+    Ok(())
+}
+```
+
+### Fetching Inbox IDs
+
+```rust
+use xmtp_proto::api_client::XmtpIdentityClient;
+use xmtp_proto::xmtp::identity::api::v1::GetInboxIdsRequest;
+
+async fn get_inbox_id<C: XmtpIdentityClient>(
+    client: &C,
+    address: String,
+) -> Result<Option<String>, C::Error> {
+    let request = GetInboxIdsRequest {
+        requests: vec![address],
+    };
+    
+    let response = client.get_inbox_ids(request).await?;
+    Ok(response.responses.first().and_then(|r| r.inbox_id.clone()))
+}
+```
+
+### Using Type-Erased Clients
+
+```rust
+use xmtp_proto::api_client::{BoxedXmtpApi, XmtpApi};
+use std::sync::Arc;
+
+struct MyService {
+    api: Arc<dyn BoxableXmtpApi<MyError>>,
+}
+
+impl MyService {
+    fn new(api: Arc<dyn BoxableXmtpApi<MyError>>) -> Self {
+        Self { api }
+    }
+    
+    async fn send_message(&self, msg: GroupMessage) -> Result<(), MyError> {
+        self.api.send_group_messages(vec![msg]).await?;
+        Ok(())
+    }
+}
+```
+
+### Deduplicating Updates
+
+```rust
+use xmtp_proto::GroupUpdateDeduper;
+
+let mut deduper = GroupUpdateDeduper::new();
+
+for message in messages {
+    if deduper.should_process(&message) {
+        // Process message
+        process_message(message).await?;
+    }
+}
+```
+
+## Pagination
+
+<ParamField path="PagingInfo" type="struct">
+  Pagination state for API responses.
+  
+  **Fields:**
+  - `cursor: Option<TopicCursor>` - Cursor for next page
+  - `has_more: bool` - Whether more results exist
+  - `limit: u32` - Page size limit
+</ParamField>
+
+<ParamField path="Paged" type="trait">
+  Trait for types that support pagination.
+  
+  **Methods:**
+  - `info() -> &Option<PagingInfo>` - Get paging information
+  - `messages() -> Vec<Message>` - Extract messages from response
+</ParamField>
+
+## Error Handling
+
+API client errors are generic:
+
+```rust
+pub trait XmtpMlsClient {
+    type Error: From<ApiError> + RetryableError;
+    
+    async fn send_group_messages(
+        &self,
+        messages: Vec<GroupMessage>,
+    ) -> Result<(), Self::Error>;
+}
+```
+
+Implementors define their own error types.
+
+## Features
+
+<ParamField path="test-utils" type="feature">
+  Testing utilities including mock clients and test helpers.
+</ParamField>
+
+<ParamField path="grpc_server_impls" type="feature">
+  Server-side gRPC implementations (usually for testing).
+</ParamField>
+
+<ParamField path="dev" type="feature">
+  Development configuration.
+</ParamField>
+
+## Platform Support
+
+- Native (all platforms with full gRPC support)
+- WebAssembly (limited gRPC client support)
+
+## Statistics and Monitoring
+
+<ParamField path="HasStats" type="trait">
+  Trait for types that provide statistics.
+  
+  ```rust
+  pub trait HasStats {
+      fn stats(&self) -> ApiStats;
+  }
+  ```
+</ParamField>
+
+<ParamField path="ApiStats" type="struct">
+  API call statistics.
+  
+  **Fields:**
+  - `request_count: u64` - Total requests
+  - `error_count: u64` - Total errors
+  - `identity_stats: IdentityStats` - Identity API stats
+</ParamField>
+
+## Prelude
+
+Common imports:
+
+```rust
+use xmtp_proto::prelude::*;
+
+// Provides:
+// - ApiBuilder
+// - XmtpIdentityClient, XmtpMlsClient, XmtpMlsStreams
+// - BoxedXmtpApi, ArcedXmtpApi
+// - ApiStats, IdentityStats
+// - FILE_DESCRIPTOR_SET
+```
+
+## Dependencies
+
+Key dependencies:
+- `prost` - Protocol buffer encoding
+- `tonic` - gRPC client/server
+- `futures` - Async streams
+- `bytes` - Efficient byte buffers

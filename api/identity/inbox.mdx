@@ -1,0 +1,369 @@
+---
+title: Inbox Management
+description: Working with inboxes, installations, and identity in LibXMTP
+---
+
+Inboxes are the core identity primitive in XMTP. Each inbox has a unique identifier and can be associated with multiple wallets and device installations.
+
+## InboxId and InstallationId
+
+### InboxId
+
+The `InboxId` is a unique identifier for an inbox, generated from a wallet address and nonce:
+
+```rust
+pub type InboxIdRef<'a> = &'a str;  // Borrowed reference
+pub type InboxId = String;          // Owned string
+```
+
+**Generation:**
+
+```rust
+use xmtp_id::associations::Identifier;
+
+let wallet_address = Identifier::eth("0x1234...")?;
+let nonce = 0u64;
+let inbox_id = wallet_address.inbox_id(nonce)?;
+// Returns SHA256 hash: sha256(wallet_address + nonce)
+```
+
+See `member.rs:168-176` for the implementation.
+
+### InstallationId
+
+An `InstallationId` represents a specific device or application installation:
+
+```rust
+pub type InstallationId = Vec<u8>;
+
+// Get from identity
+let installation_id = identity.installation_id();
+
+// Create member identifier
+let member = MemberIdentifier::installation(installation_key_bytes);
+```
+
+Installation IDs are Ed25519 public keys that sign messages on behalf of the inbox.
+
+## InboxOwner Trait
+
+The `InboxOwner` trait defines how wallets interact with the identity system:
+
+```rust
+pub trait InboxOwner {
+    /// Get the identifier of this wallet
+    fn get_identifier(&self) -> Result<Identifier, IdentifierValidationError>;
+
+    /// Sign text with this wallet
+    fn sign(&self, text: &str) -> Result<UnverifiedSignature, SignatureError>;
+}
+```
+
+See `lib.rs:90-123` for the trait definition and implementations.
+
+### Implementation Example
+
+```rust
+impl InboxOwner for PrivateKeySigner {
+    fn get_identifier(&self) -> Result<Identifier, IdentifierValidationError> {
+        Identifier::eth(h160addr_to_string(self.address()))
+    }
+
+    fn sign(&self, text: &str) -> Result<UnverifiedSignature, SignatureError> {
+        let signature_bytes = self.sign_message_sync(text.as_bytes())?;
+        Ok(UnverifiedSignature::RecoverableEcdsa(
+            UnverifiedRecoverableEcdsaSignature {
+                signature_bytes: signature_bytes.into(),
+            }
+        ))
+    }
+}
+```
+
+The `InboxOwner` trait is automatically implemented for references:
+
+```rust
+impl<T: InboxOwner> InboxOwner for &T { ... }
+```
+
+## Identity Structure
+
+The `Identity` struct represents a user's complete identity within the XMTP network:
+
+```rust
+pub struct Identity {
+    pub(crate) inbox_id: InboxId,
+    pub(crate) installation_keys: XmtpInstallationCredential,
+    pub(crate) credential: OpenMlsCredential,
+    pub(crate) signature_request: Option<SignatureRequest>,
+    pub(crate) is_ready: AtomicBool,
+}
+```
+
+See `identity.rs:294-301` for the struct definition.
+
+### Key Methods
+
+```rust
+impl Identity {
+    /// Get the inbox ID
+    pub fn inbox_id(&self) -> InboxIdRef<'_>;
+
+    /// Get the installation ID (public key bytes)
+    pub fn installation_id(&self) -> InstallationId;
+
+    /// Check if identity is ready for use
+    pub fn is_ready(&self) -> bool;
+
+    /// Get pending signature request
+    pub fn signature_request(&self) -> Option<SignatureRequest>;
+
+    /// Sign text with installation key
+    pub(crate) fn sign_identity_update<Text: AsRef<str>>(
+        &self,
+        text: Text,
+    ) -> Result<Vec<u8>, IdentityError>;
+
+    /// Generate new key package for this identity
+    pub(crate) fn new_key_package(
+        &self,
+        provider: &impl MlsProviderExt,
+        include_post_quantum: bool,
+    ) -> Result<NewKeyPackageResult, IdentityError>;
+}
+```
+
+## Creating an Identity
+
+Identities are created through the `IdentityStrategy` system:
+
+### For New Inboxes
+
+```rust
+use xmtp_id::associations::Identifier;
+
+let wallet_address = Identifier::eth("0x1234...")?;
+let nonce = 0;
+let inbox_id = wallet_address.inbox_id(nonce)?;
+
+let strategy = IdentityStrategy::new(
+    inbox_id,
+    wallet_address,
+    nonce,
+    None,  // No legacy key
+);
+```
+
+### For Existing Inboxes
+
+If a wallet is already associated with an inbox:
+
+```rust
+// The system will:
+// 1. Check if wallet has an associated inbox_id
+// 2. Load identity updates from network
+// 3. Verify installation count is below limit
+// 4. Create signature request to add new installation
+// 5. Return Identity with pending signature request
+```
+
+See `identity.rs:358-441` for the creation flow.
+
+### With Legacy Key (V2 Migration)
+
+```rust
+let strategy = IdentityStrategy::new(
+    inbox_id,
+    wallet_address,
+    0,  // Must be 0 for legacy keys
+    Some(legacy_signed_private_key),
+);
+```
+
+Legacy keys can only be used once during inbox creation with nonce 0.
+
+## Installation Management
+
+### Querying Installations
+
+```rust
+use xmtp_id::associations::AssociationState;
+
+let state: AssociationState = /* ... */;
+
+// Get all installation IDs
+let installation_ids: Vec<Vec<u8>> = state.installation_ids();
+
+// Get installations with metadata
+let installations: Vec<Installation> = state.installations();
+for installation in installations {
+    println!("ID: {:?}", installation.id);
+    println!("Added at: {:?}", installation.client_timestamp_ns);
+}
+```
+
+### Adding an Installation
+
+```rust
+let signature_request = SignatureRequestBuilder::new(inbox_id)
+    .add_association(
+        MemberIdentifier::installation(new_installation_key),
+        existing_wallet_identifier.into(),
+    )
+    .build();
+
+// Sign with wallet
+signature_request.add_signature(wallet_signature, scw_verifier).await?;
+
+// Sign with installation key
+signature_request.add_signature(installation_signature, scw_verifier).await?;
+
+// Apply the update
+let identity_update = signature_request.build_identity_update()?;
+api_client.publish_identity_update(identity_update).await?;
+```
+
+See `builder.rs:83-99` for the `add_association` method.
+
+### Revoking Installations
+
+```rust
+let signature_request = SignatureRequestBuilder::new(inbox_id)
+    .revoke_association(
+        recovery_wallet_identifier.into(),
+        MemberIdentifier::installation(installation_to_revoke),
+    )
+    .build();
+
+// Sign with recovery wallet
+signature_request.add_signature(recovery_signature, scw_verifier).await?;
+
+// Apply revocation
+apply_signature_request_with_verifier(
+    api_client,
+    signature_request,
+    scw_verifier,
+).await?;
+```
+
+See `identity_updates.rs:125-140` for the revoke helper.
+
+## Key Package Management
+
+Key packages are cryptographic bundles that allow others to add the identity to groups:
+
+### Generating Key Packages
+
+```rust
+let result = identity.new_key_package(provider, include_post_quantum)?;
+
+// Key package for MLS protocol
+let key_package = result.key_package;
+
+// Optional post-quantum public key
+let pq_pub_key = result.pq_pub_key;
+```
+
+### Rotating Key Packages
+
+Key packages should be rotated periodically:
+
+```rust
+identity.rotate_and_upload_key_package(
+    api_client,
+    mls_storage,
+    true,  // Include post-quantum keys
+).await?;
+```
+
+Key packages are automatically rotated based on `KEY_PACKAGE_ROTATION_INTERVAL_NS`.
+
+See `identity.rs:640-675` for rotation implementation.
+
+## Registration Flow
+
+Registering an identity involves:
+
+1. Creating or loading the identity
+2. Generating and uploading key packages
+3. Storing the identity locally
+
+```rust
+impl Identity {
+    pub(crate) async fn register<ApiClient: XmtpApi, S: XmtpMlsStorageProvider>(
+        &self,
+        api_client: &ApiClientWrapper<ApiClient>,
+        mls_storage: &S,
+    ) -> Result<(), IdentityError> {
+        // Check if already registered
+        let stored_identity: Option<StoredIdentity> = mls_storage.db().fetch(&())?;
+        if stored_identity.is_some() {
+            return Ok(());
+        }
+
+        // Upload key package
+        self.rotate_and_upload_key_package(
+            api_client,
+            mls_storage,
+            CREATE_PQ_KEY_PACKAGE_EXTENSION,
+        )
+        .await?;
+
+        // Store identity
+        StoredIdentity::try_from(self)?.store(&mls_storage.db())?;
+        Ok(())
+    }
+}
+```
+
+See `identity.rs:609-628` for the registration method.
+
+## Identity Errors
+
+Common errors when working with identities:
+
+```rust
+pub enum IdentityError {
+    /// Identity not found in cache
+    RequiredIdentityNotFound,
+    
+    /// InboxId mismatch between provided and stored
+    InboxIdMismatch { id: InboxId, stored: InboxId },
+    
+    /// Too many installations for inbox
+    TooManyInstallations {
+        inbox_id: String,
+        count: usize,
+        max: usize,
+    },
+    
+    /// Legacy key can only be used once
+    LegacyKeyReuse,
+    
+    /// Installation key errors
+    InstallationKey(String),
+    
+    // ... other variants
+}
+```
+
+See `identity.rs:188-272` for all error types.
+
+## Best Practices
+
+1. **Cache identities** - Use `IdentityStrategy::CachedOnly` when possible to avoid network calls
+2. **Rotate key packages** - Implement periodic rotation for forward secrecy
+3. **Limit installations** - Be aware of `MAX_INSTALLATIONS_PER_INBOX` (typically 100)
+4. **Handle legacy migration** - Legacy keys can only be used once with nonce 0
+5. **Verify inbox associations** - Always load and verify identity updates from the network
+
+## Related Pages
+
+- [Overview](./overview.mdx) - Identity system concepts
+- [Associations](./associations.mdx) - Managing wallet and installation associations
+
+## References
+
+- Source: `crates/xmtp_id/src/lib.rs`
+- Source: `crates/xmtp_mls/src/identity.rs`
+- Source: `crates/xmtp_id/src/associations/member.rs`

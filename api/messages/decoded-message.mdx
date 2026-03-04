@@ -1,0 +1,433 @@
+---
+title: DecodedMessage
+description: Enriched message structure with reactions, replies, and metadata
+---
+
+## Overview
+
+`DecodedMessage` is the enriched message type returned by `list_enriched_messages()` / `listEnrichedMessages()`. It includes decoded content, reactions, reply counts, and references to replied-to messages.
+
+Use `DecodedMessage` when building message UIs that need to display:
+- Reaction counts and emoji
+- Reply threads
+- Deleted message states
+- Full message metadata
+
+For simple message lists without enrichment, use the lighter-weight `Message` type from `list_messages()` / `listMessages()`.
+
+## Structure
+
+### Rust
+
+```rust
+pub struct DecodedMessage {
+    pub metadata: DecodedMessageMetadata,
+    pub content: MessageBody,
+    pub fallback_text: Option<String>,
+    pub reactions: Vec<DecodedMessage>,
+    pub num_replies: usize,
+}
+```
+
+**Source:** `crates/xmtp_mls/src/messages/decoded_message.rs:108`
+
+### Node.js
+
+```typescript
+interface DecodedMessage {
+  id: string
+  sentAtNs: bigint
+  kind: GroupMessageKind
+  senderInstallationId: string
+  senderInboxId: string
+  contentType: ContentTypeId
+  conversationId: string
+  fallback: string | null
+  deliveryStatus: DeliveryStatus
+  numReplies: number
+  expiresAtNs: bigint | null
+  
+  // Getters
+  reactions: DecodedMessage[]
+  content: DecodedMessageContent
+}
+```
+
+**Source:** `bindings/node/src/messages/decoded_message.rs:11`
+
+## Metadata
+
+### DecodedMessageMetadata (Rust)
+
+```rust
+pub struct DecodedMessageMetadata {
+    pub id: Vec<u8>,                        // Message ID (bytes)
+    pub group_id: Vec<u8>,                  // Group ID (bytes)
+    pub sent_at_ns: i64,                    // Timestamp in nanoseconds
+    pub kind: GroupMessageKind,             // Application or MembershipChange
+    pub sender_installation_id: Vec<u8>,    // Sender's installation ID
+    pub sender_inbox_id: String,            // Sender's inbox ID
+    pub delivery_status: DeliveryStatus,    // Published, Unpublished, Failed
+    pub content_type: ContentTypeId,        // Content type identifier
+    pub inserted_at_ns: i64,                // Database insertion time
+    pub expires_at_ns: Option<i64>,         // Expiration timestamp (optional)
+}
+```
+
+**Source:** `crates/xmtp_mls/src/messages/decoded_message.rs:84`
+
+### Field descriptions
+
+#### id
+Unique message identifier as bytes. In Node.js bindings, exposed as hex string.
+
+```typescript
+console.log(message.id)  // "a1b2c3d4e5f6..."
+```
+
+#### group_id / conversationId
+Identifies which group/conversation this message belongs to. Bytes in Rust, hex string in Node.js.
+
+#### sent_at_ns
+Timestamp when the message was sent, in nanoseconds since Unix epoch.
+
+```typescript
+const sentDate = new Date(Number(message.sentAtNs / 1000000n))
+```
+
+#### kind
+Message purpose:
+- `Application` - User-generated content (text, reactions, etc.)
+- `MembershipChange` - Group membership updates
+
+```typescript
+if (message.kind === GroupMessageKind.Application) {
+  // Display to user
+} else {
+  // System message about group changes
+}
+```
+
+#### sender_installation_id
+Unique identifier for the sender's installation. A single inbox can have multiple installations (devices).
+
+#### sender_inbox_id
+Inbox ID of the message sender. This is the primary identifier for users in XMTP.
+
+#### delivery_status
+Current delivery state:
+- `Unpublished` - Message prepared but not sent to network
+- `Published` - Successfully sent and confirmed
+- `Failed` - Send attempt failed
+
+#### content_type
+Identifies the content type:
+
+```typescript
+interface ContentTypeId {
+  authorityId: string    // "xmtp.org"
+  typeId: string         // "text", "reaction", etc.
+  versionMajor: number   // 1
+  versionMinor: number   // 0
+}
+```
+
+#### inserted_at_ns
+When the message was inserted into the local database (nanoseconds).
+
+#### expires_at_ns
+Optional expiration timestamp. After this time, the message should be deleted.
+
+## Content
+
+### MessageBody (Rust)
+
+The `content` field is a `MessageBody` enum representing different content types:
+
+```rust
+pub enum MessageBody {
+    Text(Text),
+    Markdown(Markdown),
+    Reply(Reply),
+    Reaction(ReactionV2),
+    Attachment(Attachment),
+    RemoteAttachment(RemoteAttachment),
+    MultiRemoteAttachment(MultiRemoteAttachment),
+    TransactionReference(TransactionReference),
+    GroupUpdated(GroupUpdated),
+    ReadReceipt(ReadReceipt),
+    WalletSendCalls(WalletSendCalls),
+    Intent(Option<Intent>),
+    Actions(Option<Actions>),
+    LeaveRequest(LeaveRequest),
+    DeletedMessage { deleted_by: DeletedBy },
+    Custom(EncodedContent),
+}
+```
+
+**Source:** `crates/xmtp_mls/src/messages/decoded_message.rs:61`
+
+### DecodedMessageContent (Node.js)
+
+In Node.js, content is wrapped in `DecodedMessageContent` with type-safe getters:
+
+```typescript
+const content = message.content
+
+switch (content.type) {
+  case DecodedMessageContentType.Text:
+    console.log(content.text)  // string
+    break
+    
+  case DecodedMessageContentType.Reaction:
+    const reaction = content.reaction!  // Reaction
+    console.log(`${reaction.action}: ${reaction.content}`)
+    break
+    
+  case DecodedMessageContentType.Reply:
+    const reply = content.reply!  // EnrichedReply
+    console.log(reply.content)
+    if (reply.inReplyTo) {
+      console.log(`Replying to: ${reply.inReplyTo.content.text}`)
+    }
+    break
+}
+```
+
+See [Content Types](/api/messages/content-types) for details on each type.
+
+## Reactions
+
+The `reactions` field contains all reaction messages referencing this message.
+
+```typescript
+const message = enrichedMessages[0]
+console.log(`${message.reactions.length} reactions`)
+
+// Group reactions by content (emoji)
+const reactionCounts = new Map<string, number>()
+for (const reaction of message.reactions) {
+  const emoji = reaction.content.reaction!.content
+  reactionCounts.set(emoji, (reactionCounts.get(emoji) || 0) + 1)
+}
+
+// Display: 👍 5  ❤️ 3  😂 2
+for (const [emoji, count] of reactionCounts) {
+  console.log(`${emoji} ${count}`)
+}
+```
+
+### Reaction filtering
+
+Reactions include both added and removed:
+
+```typescript
+import { ReactionAction } from '@xmtp/node-bindings'
+
+const activeReactions = message.reactions.filter(r => {
+  const reaction = r.content.reaction!
+  return reaction.action === ReactionAction.Added
+})
+```
+
+## Replies
+
+### num_replies
+
+Count of messages that reference this message as a reply:
+
+```typescript
+if (message.numReplies > 0) {
+  console.log(`${message.numReplies} replies`)
+}
+```
+
+### in_reply_to (Reply content only)
+
+For messages with `Reply` content, the `in_reply_to` field contains the referenced message:
+
+```typescript
+if (message.content.type === DecodedMessageContentType.Reply) {
+  const reply = message.content.reply!
+  
+  if (reply.inReplyTo) {
+    const originalMessage = reply.inReplyTo
+    console.log(`Replying to: ${originalMessage.content.text}`)
+    console.log(`Original sender: ${originalMessage.senderInboxId}`)
+  }
+}
+```
+
+**Rust structure:**
+```rust
+pub struct Reply {
+    pub in_reply_to: Option<Box<DecodedMessage>>,  // Populated by enrichment
+    pub content: Box<MessageBody>,                  // Reply content
+    pub reference_id: String,                       // Hex message ID
+}
+```
+
+**Source:** `crates/xmtp_mls/src/messages/decoded_message.rs:32`
+
+## Deleted messages
+
+When a message is deleted, its content is replaced with:
+
+```rust
+MessageBody::DeletedMessage {
+    deleted_by: DeletedBy::Sender,  // or DeletedBy::Admin(inbox_id)
+}
+```
+
+The original content is not accessible, but metadata remains:
+
+```typescript
+if (message.content.type === DecodedMessageContentType.DeletedMessage) {
+  const deleted = message.content.deletedMessage!
+  
+  if (deleted.deletedBy === 'sender') {
+    console.log('[Message deleted]')
+  } else {
+    console.log(`[Deleted by admin: ${deleted.adminInboxId}]`)
+  }
+  
+  // Reactions and replies are cleared
+  console.log(message.reactions.length)  // 0
+  console.log(message.numReplies)        // 0
+}
+```
+
+Deleted messages in reply chains:
+
+```typescript
+if (reply.inReplyTo?.content.type === DecodedMessageContentType.DeletedMessage) {
+  console.log('[Replied to deleted message]')
+}
+```
+
+## Fallback text
+
+Many content types include fallback text for clients that don't support them:
+
+```typescript
+if (message.fallback) {
+  console.log(message.fallback)
+  // "Reacted with \"👍\" to an earlier message"
+  // "Replied with \"Thanks!\" to an earlier message"
+  // "Can't display document.pdf. This app doesn't support attachments."
+}
+```
+
+## Querying enriched messages
+
+### List with options
+
+```typescript
+const messages = await conversation.listEnrichedMessages({
+  limit: 50,
+  sentAfterNs: Date.now() * 1000000n - 86400000000000n,  // Last 24 hours
+  direction: 'descending'
+})
+
+for (const msg of messages) {
+  console.log(`${msg.senderInboxId}: ${msg.content.text}`)
+  console.log(`  Reactions: ${msg.reactions.length}`)
+  console.log(`  Replies: ${msg.numReplies}`)
+}
+```
+
+### Performance considerations
+
+Enriched messages are more expensive to load than basic messages because they:
+1. Decode message content
+2. Query related reactions
+3. Query reply counts
+4. Fetch referenced messages for replies
+5. Check deletion status
+
+**Best practices:**
+- Use `listMessages()` for simple message lists
+- Use `listEnrichedMessages()` only when displaying reactions/replies
+- Implement pagination to limit batch size
+- Cache enriched data on the client side
+
+## Enrichment process
+
+The enrichment process (from `crates/xmtp_mls/src/messages/enrichment.rs`):
+
+1. **Decode content** - Convert stored bytes to `MessageBody`
+2. **Load reactions** - Query reactions referencing each message
+3. **Count replies** - Count messages with `reference_id` matching message ID
+4. **Load reply context** - For reply messages, fetch the referenced message
+5. **Apply deletions** - Replace content with `DeletedMessage` if deleted
+6. **Validate deletions** - Ensure deletion is by sender or admin
+
+**Source:** `crates/xmtp_mls/src/messages/enrichment.rs:73`
+
+## Example: Message thread UI
+
+```typescript
+async function displayThread(conversation: Conversation) {
+  const messages = await conversation.listEnrichedMessages({
+    limit: 100,
+    direction: 'descending'
+  })
+  
+  for (const msg of messages) {
+    // Skip membership changes
+    if (msg.kind !== GroupMessageKind.Application) continue
+    
+    // Display sender and content
+    console.log(`\n${msg.senderInboxId}:`)
+    
+    switch (msg.content.type) {
+      case DecodedMessageContentType.Text:
+        console.log(`  ${msg.content.text}`)
+        break
+        
+      case DecodedMessageContentType.Reply:
+        const reply = msg.content.reply!
+        console.log(`  ↳ ${reply.content}`)
+        if (reply.inReplyTo) {
+          console.log(`    (replying to: ${reply.inReplyTo.content.text})`)
+        }
+        break
+        
+      case DecodedMessageContentType.DeletedMessage:
+        console.log(`  [Message deleted]`)
+        break
+    }
+    
+    // Display reactions
+    if (msg.reactions.length > 0) {
+      const reactionMap = new Map()
+      for (const r of msg.reactions) {
+        const emoji = r.content.reaction!.content
+        if (r.content.reaction!.action === ReactionAction.Added) {
+          reactionMap.set(emoji, (reactionMap.get(emoji) || 0) + 1)
+        }
+      }
+      
+      const reactionsStr = Array.from(reactionMap.entries())
+        .map(([emoji, count]) => `${emoji} ${count}`)
+        .join('  ')
+      console.log(`  Reactions: ${reactionsStr}`)
+    }
+    
+    // Display reply count
+    if (msg.numReplies > 0) {
+      console.log(`  ${msg.numReplies} replies`)
+    }
+    
+    // Show timestamp
+    const date = new Date(Number(msg.sentAtNs / 1000000n))
+    console.log(`  ${date.toLocaleTimeString()}`)
+  }
+}
+```
+
+## See also
+
+- [Messages Overview](/api/messages/overview) - Message lifecycle and patterns
+- [Content Types](/api/messages/content-types) - Available content types
+- [Sending Messages](/guides/sending-messages) - Guide to sending messages

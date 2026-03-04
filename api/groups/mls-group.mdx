@@ -1,0 +1,499 @@
+---
+title: 'MlsGroup'
+description: 'Complete API reference for the MlsGroup struct and methods'
+---
+
+## MlsGroup Struct
+
+`MlsGroup<Context>` is the primary interface for group conversations in LibXMTP.
+
+```rust
+pub struct MlsGroup<Context> {
+    pub group_id: Vec<u8>,
+    pub dm_id: Option<String>,
+    pub conversation_type: ConversationType,
+    pub created_at_ns: i64,
+    pub context: Context,
+    // Private fields
+}
+```
+
+### Fields
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `group_id` | `Vec<u8>` | Unique identifier for the group |
+| `dm_id` | `Option<String>` | DM identifier (for DM conversations only) |
+| `conversation_type` | `ConversationType` | Type of conversation (Group, DM, etc.) |
+| `created_at_ns` | `i64` | Creation timestamp in nanoseconds |
+| `context` | `Context` | Shared context providing dependencies |
+
+### Traits
+
+- `Clone` - Groups can be cloned (shares underlying context)
+- `PartialEq`, `Eq` - Equality based on `group_id`
+- `Hash` - Hashing based on `group_id`
+- `Debug` - Formatted debug output
+
+## Constructor Methods
+
+### new
+
+```rust
+pub fn new(
+    context: Context,
+    group_id: Vec<u8>,
+    dm_id: Option<String>,
+    conversation_type: ConversationType,
+    created_at_ns: i64,
+) -> Self
+```
+
+Creates a new group instance without database validation.
+
+**Parameters:**
+- `context` - Shared context
+- `group_id` - Group identifier
+- `dm_id` - Optional DM identifier
+- `conversation_type` - Conversation type
+- `created_at_ns` - Creation timestamp
+
+**Returns:** New `MlsGroup` instance
+
+### new_cached
+
+```rust
+pub fn new_cached(
+    context: Context,
+    group_id: &[u8],
+) -> Result<(Self, StoredGroup), StorageError>
+```
+
+Creates a group instance from the database with validation.
+
+**Parameters:**
+- `context` - Shared context
+- `group_id` - Group identifier
+
+**Returns:** Tuple of `(MlsGroup, StoredGroup)`
+
+**Errors:**
+- `NotFound::GroupById` - Group not found in database
+
+### create_and_insert
+
+```rust
+pub(crate) fn create_and_insert(
+    context: Context,
+    conversation_type: ConversationType,
+    permissions_policy_set: PolicySet,
+    opts: GroupMetadataOptions,
+    oneshot_message: Option<OneshotMessage>,
+) -> Result<Self, GroupError>
+```
+
+Creates a new group and saves it to the database.
+
+**Parameters:**
+- `context` - Shared context
+- `conversation_type` - Must not be `ConversationType::Dm`
+- `permissions_policy_set` - Permission policies for the group
+- `opts` - Metadata options (name, description, etc.)
+- `oneshot_message` - Optional oneshot message
+
+**Returns:** New `MlsGroup` instance
+
+**Side Effects:**
+- Creates OpenMLS group
+- Stores group in database
+- Sets consent state to `Allowed`
+
+### create_dm_and_insert
+
+```rust
+pub(crate) fn create_dm_and_insert(
+    context: &Context,
+    membership_state: GroupMembershipState,
+    dm_target_inbox_id: InboxId,
+    opts: DMMetadataOptions,
+    existing_group_id: Option<&[u8]>,
+) -> Result<Self, GroupError>
+```
+
+Creates a new DM conversation and saves it to the database.
+
+**Parameters:**
+- `context` - Shared context
+- `membership_state` - Initial membership state
+- `dm_target_inbox_id` - Target inbox ID for the DM
+- `opts` - DM metadata options
+- `existing_group_id` - Optional existing group ID (for backup restoration)
+
+**Returns:** New `MlsGroup` instance
+
+## Messaging Methods
+
+### send_message
+
+```rust
+pub async fn send_message(
+    &self,
+    message: &[u8],
+    opts: SendMessageOpts,
+) -> Result<Vec<u8>, GroupError>
+```
+
+Sends a message and waits for publishing to complete.
+
+**Parameters:**
+- `message` - Message content bytes (typically encoded `EncodedContent`)
+- `opts` - Send options (includes `should_push` flag)
+
+**Returns:** Message ID bytes
+
+**Errors:**
+- `GroupError::GroupInactive` - Group is not active
+
+**Side Effects:**
+- Updates installations if needed
+- Publishes all pending intents
+- Sets group consent state to `Allowed`
+
+### send_message_optimistic
+
+```rust
+pub fn send_message_optimistic(
+    &self,
+    message: &[u8],
+    opts: SendMessageOpts,
+) -> Result<Vec<u8>, GroupError>
+```
+
+Sends a message optimistically, returning immediately without waiting for publishing.
+
+**Parameters:**
+- `message` - Message content bytes
+- `opts` - Send options
+
+**Returns:** Message ID bytes
+
+**Note:** Message is queued locally but not published. Call `publish_messages()` to publish.
+
+### prepare_message_for_later_publish
+
+```rust
+pub fn prepare_message_for_later_publish(
+    &self,
+    message: &[u8],
+    should_push: bool,
+) -> Result<Vec<u8>, GroupError>
+```
+
+Prepares a message for later publishing without creating an intent.
+
+**Parameters:**
+- `message` - Message content bytes
+- `should_push` - Whether to send push notification when publishing
+
+**Returns:** Message ID bytes
+
+**Note:** Message is stored with `Unpublished` status. Use `publish_stored_message` to publish.
+
+### publish_stored_message
+
+```rust
+pub async fn publish_stored_message(
+    &self,
+    message_id: &[u8],
+) -> Result<(), GroupError>
+```
+
+Publishes a previously stored message by ID.
+
+**Parameters:**
+- `message_id` - ID of the message to publish
+
+**Errors:**
+- `GroupError::GroupInactive` - Group is not active
+- `NotFound::MessageById` - Message not found
+
+**Note:** No-op if message is already published.
+
+### publish_messages
+
+```rust
+pub async fn publish_messages(&self) -> Result<(), GroupError>
+```
+
+Publishes all unpublished messages by syncing until all intents are resolved.
+
+**Side Effects:**
+- Updates installations if needed
+- Sets group consent state to `Allowed`
+
+### delete_message
+
+```rust
+pub fn delete_message(&self, message_id: Vec<u8>) -> Result<Vec<u8>, GroupError>
+```
+
+Deletes a message by its ID.
+
+**Parameters:**
+- `message_id` - Raw bytes of the message ID
+
+**Returns:** ID of the deletion message
+
+**Authorization:**
+- Only the original sender or a super admin can delete messages
+
+**Wire Protocol:**
+The message ID is hex-encoded for wire transmission. When processing incoming deletions, the hex string is decoded back to bytes for database lookups.
+
+**Errors:**
+- `DeleteMessageError::MessageNotFound` - Message not found
+- `DeleteMessageError::NotAuthorized` - Not the sender or super admin
+- `DeleteMessageError::MessageAlreadyDeleted` - Message already deleted
+- `DeleteMessageError::NonDeletableMessage` - Message type cannot be deleted
+
+## Query Methods
+
+### find_messages
+
+```rust
+pub fn find_messages(
+    &self,
+    args: &MsgQueryArgs,
+) -> Result<Vec<StoredGroupMessage>, GroupError>
+```
+
+Queries the database for stored messages.
+
+**Parameters:**
+- `args` - Query arguments (time range, kind, delivery status, limit)
+
+**Returns:** Vector of `StoredGroupMessage`
+
+### count_messages
+
+```rust
+pub fn count_messages(
+    &self,
+    args: &MsgQueryArgs,
+) -> Result<i64, GroupError>
+```
+
+Counts the number of stored messages matching the criteria.
+
+**Parameters:**
+- `args` - Query arguments
+
+**Returns:** Message count
+
+### find_messages_with_reactions
+
+```rust
+pub fn find_messages_with_reactions(
+    &self,
+    args: &MsgQueryArgs,
+) -> Result<Vec<StoredGroupMessageWithReactions>, GroupError>
+```
+
+Queries messages with their associated reactions.
+
+**Parameters:**
+- `args` - Query arguments
+
+**Returns:** Vector of `StoredGroupMessageWithReactions`
+
+### find_enriched_messages
+
+```rust
+pub fn find_enriched_messages(
+    &self,
+    args: &MsgQueryArgs,
+) -> Result<Vec<DecodedMessage>, EnrichMessageError>
+```
+
+Queries enriched messages with reactions, replies, and deletion status.
+
+**Parameters:**
+- `args` - Query arguments
+
+**Returns:** Vector of `DecodedMessage`
+
+### get_last_read_times
+
+```rust
+pub fn get_last_read_times(
+    &self,
+) -> Result<LatestMessageTimeBySender, GroupError>
+```
+
+Gets the last read receipt times by sender.
+
+**Returns:** Map of latest message times by sender
+
+## Membership Methods
+
+### add_members_by_identity
+
+```rust
+pub async fn add_members_by_identity(
+    &self,
+    account_identifiers: &[Identifier],
+) -> Result<UpdateGroupMembershipResult, GroupError>
+```
+
+Adds members to the group by account address.
+
+**Parameters:**
+- `account_identifiers` - Vector of account identifiers to add
+
+**Returns:** `UpdateGroupMembershipResult` with added/removed members and errors
+
+**Errors:**
+- `GroupError::UserLimitExceeded` - Would exceed MAX_GROUP_SIZE
+- `GroupError::AddressNotFound` - Some addresses not found
+
+**Note:** Also updates existing members' installations.
+
+### add_members
+
+```rust
+pub async fn add_members<S: AsIdRef>(
+    &self,
+    inbox_ids: impl AsRef<[S]>,
+) -> Result<UpdateGroupMembershipResult, GroupError>
+```
+
+Adds members to the group by inbox IDs.
+
+**Parameters:**
+- `inbox_ids` - Vector of inbox IDs to add
+
+**Returns:** `UpdateGroupMembershipResult`
+
+### remove_members_by_identity
+
+```rust
+pub async fn remove_members_by_identity(
+    &self,
+    account_addresses_to_remove: &[Identifier],
+) -> Result<(), GroupError>
+```
+
+Removes members from the group by account addresses.
+
+**Parameters:**
+- `account_addresses_to_remove` - Vector of account identifiers to remove
+
+### remove_members
+
+```rust
+pub async fn remove_members(
+    &self,
+    inbox_ids: &[InboxIdRef<'_>],
+) -> Result<(), GroupError>
+```
+
+Removes members from the group by inbox IDs.
+
+**Parameters:**
+- `inbox_ids` - Slice of inbox ID references to remove
+
+### update_installations
+
+```rust
+pub async fn update_installations(&self) -> Result<(), GroupError>
+```
+
+Checks the network for identity updates and adds/removes installations accordingly.
+
+**Note:** This is automatically called periodically during `send_message`.
+
+### leave_group
+
+```rust
+pub async fn leave_group(&self) -> Result<(), GroupError>
+```
+
+Leaves the group (sends a leave request).
+
+**Errors:**
+- `GroupLeaveValidationError::NotAGroupMember` - Not a member
+- `GroupLeaveValidationError::SingleMemberLeaveRejected` - Only member
+- `GroupLeaveValidationError::DmLeaveForbidden` - Cannot leave DMs
+- `GroupLeaveValidationError::SuperAdminLeaveForbidden` - Super admins must be demoted first
+
+### remove_members_pending_removal
+
+```rust
+pub async fn remove_members_pending_removal(&self) -> Result<(), GroupError>
+```
+
+Removes all members from the pending removal list.
+
+**Authorization:** Only admins and super admins can call this.
+
+### cleanup_pending_removal_list
+
+```rust
+pub async fn cleanup_pending_removal_list(&self) -> Result<(), GroupError>
+```
+
+Removes members from the pending removal list who are no longer in the group.
+
+## Utility Methods
+
+### load
+
+```rust
+pub fn load(&self) -> Result<StoredGroup, StorageError>
+```
+
+Loads the group reference from the local database.
+
+**Returns:** `StoredGroup` with database fields
+
+**Errors:**
+- `NotFound::GroupById` - Group not found
+
+## Related Types
+
+### SendMessageOpts
+
+```rust
+pub struct SendMessageOpts {
+    pub should_push: bool,
+}
+```
+
+Options for sending messages.
+
+### UpdateGroupMembershipResult
+
+```rust
+pub struct UpdateGroupMembershipResult {
+    pub added_members: Vec<Installation>,
+    pub removed_members: Vec<Installation>,
+    pub members_with_errors: Vec<MemberError>,
+}
+```
+
+Result of membership update operations.
+
+### MsgQueryArgs
+
+Arguments for querying messages:
+- Time range filtering
+- Message kind filtering
+- Delivery status filtering
+- Limit and offset
+
+## Source References
+
+- Definition: `crates/xmtp_mls/src/groups/mod.rs:122`
+- Constructor: `crates/xmtp_mls/src/groups/mod.rs:290`
+- Messaging: `crates/xmtp_mls/src/groups/mod.rs:588`
+- Membership: `crates/xmtp_mls/src/groups/mod.rs:970`

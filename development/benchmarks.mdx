@@ -1,0 +1,209 @@
+---
+title: Benchmarks
+description: Learn how to run and analyze performance benchmarks in LibXMTP
+---
+
+LibXMTP includes comprehensive benchmarks to measure and track performance of critical operations.
+
+## Available Benchmarks
+
+The `xmtp_mls` crate includes several benchmark suites:
+
+- **group_limit**: Benchmarks for maximum members adding/removing from groups
+- **crypto**: Benchmarks for cryptographic functions
+- **identity**: Benchmarks for identity operations
+- **groups**: Benchmarks for group operations
+- **messages**: Benchmarks for message handling
+- **consent**: Benchmarks for consent operations
+- **sync_conversations**: Benchmarks for conversation synchronization
+
+## Running Benchmarks
+
+### Run All Benchmarks
+
+The simplest way to run all benchmarks:
+
+```bash
+./dev/bench
+```
+
+### Run a Specific Benchmark
+
+Run a single named benchmark:
+
+```bash
+./dev/bench add_1_member_to_group
+```
+
+### Run a Benchmark Category
+
+Run all benchmarks in a specific category:
+
+```bash
+cargo bench --features bench -p xmtp_mls --bench group_limit
+```
+
+<Note>
+  All benchmark commands require the `bench` feature flag.
+</Note>
+
+## Benchmark Categories
+
+### Group Limit Benchmarks
+
+Test group performance with varying member counts:
+
+```bash
+cargo bench --features bench -p xmtp_mls --bench group_limit
+```
+
+### Crypto Benchmarks
+
+Benchmark cryptographic operations:
+
+```bash
+cargo bench --features bench -p xmtp_mls --bench crypto
+```
+
+### Identity Benchmarks
+
+Benchmark identity-related operations:
+
+```bash
+cargo bench --features bench -p xmtp_mls --bench identity
+```
+
+### Groups Benchmarks
+
+Benchmark general group operations:
+
+```bash
+cargo bench --features bench -p xmtp_mls --bench groups
+```
+
+### Messages Benchmarks
+
+Benchmark message sending and processing:
+
+```bash
+cargo bench --features bench -p xmtp_mls --bench messages
+```
+
+### Consent Benchmarks
+
+Benchmark consent management:
+
+```bash
+cargo bench --features bench -p xmtp_mls --bench consent
+```
+
+### Sync Conversations Benchmarks
+
+Benchmark conversation synchronization:
+
+```bash
+cargo bench --features bench -p xmtp_mls --bench sync_conversations
+```
+
+## Running Against Dev gRPC
+
+To run benchmarks against the development gRPC server:
+
+```bash
+DEV_GRPC=1 cargo bench --features bench -p xmtp_mls --bench group_limit
+```
+
+<Info>
+  Make sure the development gRPC server is running before using `DEV_GRPC=1`.
+</Info>
+
+## Profiling with Flamegraphs
+
+Generate a flamegraph to visualize performance bottlenecks:
+
+```bash
+./dev/flamegraph add_1_member_to_group
+```
+
+This creates a visual representation of where time is spent during benchmark execution.
+
+## Benchmark Features
+
+Benchmarks are gated behind the `bench` feature, which includes:
+
+- Test utilities
+- Progress indicators (via `indicatif`)
+- Tracing and logging
+- Criterion for benchmark framework
+- File descriptor limit management (via `fdlimit`)
+- Performance optimization tools
+
+From `Cargo.toml`:
+
+```toml
+bench = [
+  "test-utils",
+  "indicatif",
+  "tracing-subscriber",
+  "criterion",
+  "dep:fdlimit",
+  "dep:alloy",
+  "xmtp_common/bench",
+]
+```
+
+## Understanding Benchmark Results
+
+Criterion produces detailed output including:
+
+- **Time**: Mean execution time with confidence intervals
+- **Throughput**: Operations per second (where applicable)
+- **Change**: Performance change compared to previous runs
+- **Outliers**: Statistical outliers in the measurements
+
+## Best Practices
+
+<Steps>
+  <Step title="Close unnecessary applications">
+    Ensure consistent results by closing resource-intensive applications before running benchmarks.
+  </Step>
+
+  <Step title="Run multiple iterations">
+    Criterion automatically runs multiple iterations, but you can increase iterations for more stable results.
+  </Step>
+
+  <Step title="Use flamegraphs for optimization">
+    When optimizing, use flamegraphs to identify bottlenecks:
+    
+    ```bash
+    ./dev/flamegraph your_benchmark_name
+    ```
+  </Step>
+
+  <Step title="Compare against baseline">
+    Criterion saves baseline results to compare against future runs, helping you track performance regressions.
+  </Step>
+</Steps>
+
+## Continuous Integration
+
+Benchmarks can be run in CI to track performance over time. The results help identify performance regressions before they reach production.
+
+## Troubleshooting
+
+### File Descriptor Limits
+
+If you encounter file descriptor limit errors, the `fdlimit` dependency (included with the `bench` feature) should automatically handle this. If issues persist, manually increase your system's file descriptor limit.
+
+### Memory Issues
+
+For large-scale benchmarks (like group_limit with many members), ensure you have sufficient memory available. Consider running benchmarks individually rather than all at once.
+
+### Inconsistent Results
+
+If benchmark results are inconsistent:
+
+1. Close background applications
+2. Disable CPU frequency scaling (if possible)
+3. Run benchmarks multiple times and look for patterns
+4. Check for system resource contention

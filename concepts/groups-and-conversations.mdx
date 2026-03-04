@@ -1,0 +1,569 @@
+---
+title: Groups and Conversations
+description: Creating and managing MLS groups, permissions, and metadata in LibXMTP
+---
+
+LibXMTP provides flexible group messaging with configurable permissions, metadata, and member management.
+
+## Group Types
+
+### Standard Groups
+
+Multi-member conversations supporting 1 to `MAX_GROUP_SIZE` inboxes:
+
+```rust
+let group = client.create_group(
+    Some(permissions_policy_set),
+    Some(group_metadata_options),
+)?;
+```
+
+**Characteristics**:
+- Creator becomes sole super admin
+- Configurable permission policies
+- Custom metadata (name, description, image)
+- Member management (add/remove)
+
+### Direct Messages (DMs)
+
+Two-person conversations with special handling:
+
+```rust
+let dm = client.find_or_create_dm(
+    target_inbox_id,
+    Some(dm_metadata_options),
+).await?;
+```
+
+**Characteristics**:
+- Uses `PolicySet::new_dm()` (fixed permissions)
+- Cannot leave (prevented by validation)
+- Automatically created on first message
+- Deduplicated by participant pair
+
+<Info>
+DMs are deduplicated using a `dm_id` composed of both inbox IDs. Multiple DM groups may exist temporarily, but they get "stitched" together based on the last active one.
+</Info>
+
+## Group Creation
+
+### Creating a Group
+
+```rust
+let opts = GroupMetadataOptions {
+    name: Some("Engineering Team".to_string()),
+    description: Some("Backend team discussions".to_string()),
+    image_url_square: Some("https://example.com/avatar.png".to_string()),
+    pinned_frame_url: Some("https://example.com/frame".to_string()),
+    message_disappearing_settings: None,
+};
+
+let group = client.create_group(
+    Some(PolicySet::default()),
+    Some(opts),
+)?;
+```
+
+**Initial State**:
+- Group ID: Random bytes from OpenMLS
+- Members: Just the creator's installation
+- Creator's inbox ID mapped to `sequence_id=0` in `GroupMembership`
+- Creator marked as only super admin
+
+**First Action**:
+On the first group operation (send message, add member), the client:
+1. Updates creator's `sequence_id` to current value
+2. Automatically adds creator's other installations
+
+### Creating with Members
+
+Add members during creation:
+
+```rust
+let group = client.create_group_with_members(
+    &[inbox_id_1, inbox_id_2],
+    Some(permissions),
+    Some(metadata),
+).await?;
+```
+
+This creates the group then immediately adds the specified members.
+
+## Member Management
+
+### Adding Members
+
+By inbox ID:
+
+```rust
+let result = group.add_members(&[
+    inbox_id_1,
+    inbox_id_2,
+]).await?;
+
+println!("Added: {:?}", result.added_members);
+println!("Failed: {:?}", result.members_with_errors);
+```
+
+By wallet address:
+
+```rust
+let result = group.add_members_by_identity(&[
+    Identifier::eth("0x1234...")?,
+    Identifier::eth("0x5678...")?,
+]).await?;
+```
+
+**Process**:
+1. Validate member count doesn't exceed `MAX_GROUP_SIZE`
+2. Fetch current key packages for all installations of each inbox
+3. Create MLS commit with Add proposals
+4. Update `GroupMembership` extension
+5. Send welcome messages to new members
+
+<Warning>
+Adding members also triggers an **installations update** for existing members, ensuring their latest installations are added and revoked ones removed.
+</Warning>
+
+### Removing Members
+
+```rust
+group.remove_members(&[inbox_id]).await?;
+```
+
+**Process**:
+1. Create MLS commit with Remove proposals for all installations of the inbox
+2. Update `GroupMembership` extension
+3. Publish commit to network
+
+<Note>
+Removing an inbox removes **all** of its installations from the group.
+</Note>
+
+### Updating Installations
+
+Check for identity changes and sync group membership:
+
+```rust
+group.update_installations().await?;
+```
+
+**When this runs**:
+- Automatically before sending messages (if > 5 minutes since last update)
+- Manually via `update_installations()`
+- During member add operations
+
+**What it does**:
+1. Fetch latest association state for all group members
+2. Compute diff: new installations and revoked installations
+3. Create commit adding new installations and removing revoked ones
+
+## Group Metadata
+
+### Mutable Metadata
+
+User-facing properties stored in `GroupMutableMetadata`:
+
+```rust
+pub struct GroupMutableMetadata {
+    pub attributes: HashMap<String, String>,
+    pub admin_list: Vec<String>,
+    pub super_admin_list: Vec<String>,
+}
+```
+
+**Standard attributes**:
+- `group_name`: Display name (max 100 chars)
+- `description`: Group description (max 1000 chars)
+- `group_image_url_square`: Avatar URL (max 2048 chars)
+- `group_pinned_frame_url`: Pinned frame URL
+- Custom attributes for app-specific data
+
+**Constraints**:
+```rust
+const MAX_GROUP_NAME_LENGTH: usize = 100;
+const MAX_GROUP_DESCRIPTION_LENGTH: usize = 1000;
+const MAX_GROUP_IMAGE_URL_LENGTH: usize = 2048;
+const MAX_APP_DATA_LENGTH: usize = 8192;
+```
+
+### Protected Metadata
+
+Immutable properties in `GroupMetadata`:
+
+```rust
+pub struct GroupMetadata {
+    pub conversation_type: ConversationType,
+    pub creator_inbox_id: String,
+    pub dm_members: Option<DmMembers>,
+}
+```
+
+Set at creation and never modified.
+
+### Querying Metadata
+
+```rust
+// Get mutable metadata
+let metadata = group.mutable_metadata()?;
+println!("Name: {:?}", metadata.attributes.get("group_name"));
+
+// Get protected metadata  
+let protected = group.metadata().await?;
+println!("Creator: {}", protected.creator_inbox_id);
+```
+
+### Updating Metadata
+
+```rust
+group.update_group_name("New Name").await?;
+group.update_group_description("New description").await?;
+group.update_group_image_url_square("https://new.url/image.png").await?;
+```
+
+Each update:
+1. Validates against `update_metadata_policy` for that field
+2. Creates MLS commit updating `GroupMutableMetadata` extension
+3. Publishes to network
+
+## Permission Policies
+
+Each group has a `PolicySet` controlling restricted actions:
+
+```rust
+pub struct PolicySet {
+    pub add_member_policy: PermissionPolicy,
+    pub remove_member_policy: PermissionPolicy,
+    pub update_metadata_policy: HashMap<String, PermissionPolicy>,
+    pub add_admin_policy: PermissionPolicy,
+    pub remove_admin_policy: PermissionPolicy,
+    pub update_permissions_policy: PermissionPolicy,
+}
+```
+
+### Permission Levels
+
+```rust
+pub enum PermissionPolicy {
+    Allow,            // Anyone in group
+    Deny,             // No one (immutable)
+    Admin,            // Admins only
+    SuperAdmin,       // Super admins only
+    Custom(MetadataPolicy),
+}
+```
+
+### Preconfigured Policies
+
+**AllMembers**: Everyone can modify
+```rust
+PolicySet::all_members()
+```
+
+**AdminsOnly**: Only admins and super admins
+```rust
+PolicySet::admins_only()
+```
+
+**Default**: Balanced permissions
+```rust
+PolicySet::default()
+// add_member: Allow
+// remove_member: Admin
+// metadata: mixed (name/description: Allow, image: Admin)
+// admins: SuperAdmin only
+```
+
+### Managing Admins
+
+```rust
+// Add regular admin
+group.add_admin(inbox_id).await?;
+
+// Add super admin (can only be done by existing super admin)
+group.add_super_admin(inbox_id).await?;
+
+// Remove admin
+group.remove_admin(inbox_id).await?;
+
+// Check admin status
+let is_admin = group.is_admin(inbox_id)?;
+let is_super_admin = group.is_super_admin(inbox_id)?;
+```
+
+<Warning>
+Super admins cannot remove other super admins. To leave a group, a super admin must first be demoted to regular admin.
+</Warning>
+
+### Updating Policies
+
+```rust
+let new_policy = PermissionPolicy::Admin;
+group.update_permission_policy(
+    PermissionUpdateType::AddMember,
+    PermissionPolicyOption::Policy(new_policy),
+    PermissionPolicyOption::Policy(PermissionPolicy::SuperAdmin),
+).await?;
+```
+
+The second policy parameter specifies who can make this permission change (meta-permissions).
+
+## Messaging
+
+### Sending Messages
+
+```rust
+let message_bytes = EncodedContent::encode(...)?;
+let message_id = group.send_message(
+    &message_bytes,
+    SendMessageOpts::default(),
+).await?;
+```
+
+**Process**:
+1. Check group is active (not inactive)
+2. Update installations if needed (periodic check)
+3. Store message locally with `Unpublished` status
+4. Create `SendMessageIntent` 
+5. Process intent queue
+6. Publish MLS application message
+7. Update message to `Published` status
+
+**Optimistic Sending**:
+```rust
+let message_id = group.send_message_optimistic(&message_bytes, opts)?;
+// Returns immediately with message ID
+// Message published in background
+```
+
+### Querying Messages
+
+```rust
+let args = MsgQueryArgs {
+    sent_after_ns: Some(yesterday),
+    sent_before_ns: Some(now),
+    limit: Some(50),
+    kind: Some(GroupMessageKind::Application),
+    delivery_status: Some(DeliveryStatus::Published),
+    ..Default::default()
+};
+
+let messages = group.find_messages(&args)?;
+```
+
+**Query options**:
+- Time range (`sent_after_ns`, `sent_before_ns`)
+- Message kind (application vs. membership changes)
+- Delivery status (published, unpublished, failed)
+- Limit and direction
+
+### Enriched Messages
+
+Get messages with reactions, replies, and deletion status:
+
+```rust
+let enriched = group.find_enriched_messages(&args)?;
+
+for msg in enriched {
+    println!("Content: {:?}", msg.content);
+    println!("Reactions: {:?}", msg.reactions);
+    println!("Replies: {:?}", msg.reply_to);
+    println!("Deleted: {}", msg.is_deleted);
+}
+```
+
+### Message Deletion
+
+Delete your own messages or (if super admin) others:
+
+```rust
+let deletion_id = group.delete_message(message_id)?;
+```
+
+**Validation**:
+- Message must belong to this group
+- Caller must be original sender OR super admin
+- Message type must be deletable
+- Message not already deleted
+
+Deletion creates a new message of type `DeleteMessage` which clients use to hide the original.
+
+## Syncing
+
+### Sync Messages
+
+Pull new messages from network:
+
+```rust
+group.sync().await?;
+```
+
+**Process**:
+1. Fetch group messages since last cursor
+2. Decrypt and validate each message
+3. Store in local database
+4. Process any intents (commits to apply)
+5. Update cursor
+
+### Sync Welcomes
+
+Discover new groups you've been added to:
+
+```rust
+let new_groups = client.sync_welcomes().await?;
+```
+
+### Sync All
+
+Sync welcomes then sync all groups:
+
+```rust
+let summary = client.sync_all_welcomes_and_groups(
+    Some(vec![ConsentState::Allowed]),
+).await?;
+
+println!("Synced {} groups", summary.total_groups_synced);
+```
+
+## Group Queries
+
+### Finding Groups
+
+```rust
+let args = GroupQueryArgs {
+    allowed_states: Some(vec![GroupMembershipState::Allowed]),
+    created_after_ns: Some(last_week),
+    created_before_ns: Some(now),
+    limit: Some(20),
+    conversation_type: Some(ConversationType::Group),
+    ..Default::default()
+};
+
+let groups = client.find_groups(args)?;
+```
+
+### Conversation List
+
+Get groups with last message preview:
+
+```rust
+let conversations = client.list_conversations(
+    GroupQueryArgs::default(),
+)?;
+
+for item in conversations {
+    println!("Group: {:?}", item.group.group_id);
+    if let Some(msg) = item.last_message {
+        println!("Last message: {:?}", msg.decrypted_message_bytes);
+    }
+}
+```
+
+## Consent and Blocking
+
+### Setting Consent
+
+```rust
+client.set_consent_states(&[
+    StoredConsentRecord {
+        entity_type: ConsentType::InboxId,
+        entity: inbox_id.to_string(),
+        state: ConsentState::Denied,
+    },
+]).await?;
+```
+
+**States**:
+- `Allowed`: Accepted contact
+- `Denied`: Blocked contact
+- `Unknown`: No preference set
+
+**Entity types**:
+- `InboxId`: Block an entire inbox
+- `Address`: Block a wallet address
+- `ConversationId`: Block a specific group
+
+Blocking happens at the application level; blocked members can still send messages but they're hidden by the client.
+
+## Leaving Groups
+
+```rust
+group.leave_group().await?;
+```
+
+**Validation**:
+- Must be a group member
+- Group must have > 1 member
+- Cannot be a DM (DMs can't be left)
+- Cannot be a super admin (must be demoted first)
+
+**Process**:
+1. Send `LeaveRequest` message to group
+2. Client is added to "pending removal" list
+3. Admins can remove pending members via `remove_members_pending_removal()`
+
+<Note>
+Leaving does **not** immediately remove you. An admin must process pending removals. This prevents users from removing themselves and circumventing group policies.
+</Note>
+
+## Message Disappearing
+
+Ephemeral messages that auto-delete:
+
+```rust
+let opts = GroupMetadataOptions {
+    message_disappearing_settings: Some(MessageDisappearingSettings {
+        in_ns: Some(86_400_000_000_000), // 1 day in nanoseconds
+        from_ns: 0, // Start immediately
+    }),
+    ..Default::default()
+};
+
+let group = client.create_group(None, Some(opts))?;
+```
+
+**Settings**:
+- `in_ns`: Time until message expires (from send time)
+- `from_ns`: Timestamp when disappearing starts (0 = now)
+
+The `DisappearingMessagesWorker` periodically deletes expired messages.
+
+## Advanced Features
+
+### Streaming Updates
+
+```rust
+let mut stream = group.stream_messages().await?;
+
+while let Some(message) = stream.next().await {
+    println!("New message: {:?}", message);
+}
+```
+
+### Recovery and Forking
+
+If group state diverges (fork detected):
+
+```rust
+group.readd_installations(installations).await?;
+```
+
+This removes and re-adds installations to synchronize state.
+
+### Pending Removal Management
+
+Process members who have requested to leave:
+
+```rust
+// Remove all pending members (admin/super admin only)
+group.remove_members_pending_removal().await?;
+
+// Clean up pending list (removes already-removed members)
+group.cleanup_pending_removal_list().await?;
+```
+
+## Related Concepts
+
+- [MLS Protocol](/concepts/mls-protocol) - Underlying encryption
+- [Identity System](/concepts/identity-system) - Member inbox management  
+- [Client Lifecycle](/concepts/client-lifecycle) - Client setup

@@ -1,0 +1,200 @@
+---
+title: 'Groups Overview'
+description: 'LibXMTP Groups API for MLS-based group messaging'
+---
+
+LibXMTP Groups provides a robust implementation of group messaging using the MLS (Messaging Layer Security) protocol. This API allows you to create, manage, and interact with both group conversations and direct messages.
+
+## Core Concepts
+
+### MlsGroup
+
+The `MlsGroup` struct is the primary interface for group interactions. It represents a group conversation that can contain anywhere from 1 to `MAX_GROUP_SIZE` inboxes.
+
+```rust
+pub struct MlsGroup<Context> {
+    pub group_id: Vec<u8>,
+    pub dm_id: Option<String>,
+    pub conversation_type: ConversationType,
+    pub created_at_ns: i64,
+    pub context: Context,
+    // Internal fields omitted
+}
+```
+
+**Key Features:**
+- Generic over `Context` type (allows different API/DB combinations)
+- Thread-safe with internal locking mechanisms
+- Supports both group conversations and direct messages (DMs)
+- Integrates with OpenMLS for MLS protocol operations
+
+### Group Types
+
+LibXMTP supports different conversation types:
+
+- **Group** - Standard group conversations with multiple members
+- **DM (Direct Message)** - Two-person conversations with special handling
+- **Virtual** - Internal conversation types
+
+## Group Lifecycle
+
+### Creating Groups
+
+Groups are created through the `create_and_insert` method:
+
+```rust
+let group = MlsGroup::create_and_insert(
+    context,
+    ConversationType::Group,
+    permissions_policy_set,
+    metadata_options,
+    oneshot_message,
+)?;
+```
+
+### Loading Groups
+
+Groups can be loaded from the database:
+
+```rust
+let (group, stored_group) = MlsGroup::new_cached(context, group_id)?;
+```
+
+## Core Operations
+
+### Membership Management
+
+**Adding Members:**
+```rust
+// By inbox IDs
+let result = group.add_members(&inbox_ids).await?;
+
+// By account addresses
+let result = group.add_members_by_identity(&account_addresses).await?;
+```
+
+**Removing Members:**
+```rust
+// By inbox IDs
+group.remove_members(&inbox_ids).await?;
+
+// By account addresses
+group.remove_members_by_identity(&account_addresses).await?;
+```
+
+### Messaging
+
+**Sending Messages:**
+```rust
+// Standard send (waits for publishing)
+let message_id = group.send_message(message_bytes, opts).await?;
+
+// Optimistic send (returns immediately)
+let message_id = group.send_message_optimistic(message_bytes, opts)?;
+
+// Prepare for later publishing
+let message_id = group.prepare_message_for_later_publish(message_bytes, should_push)?;
+group.publish_stored_message(&message_id).await?;
+```
+
+**Querying Messages:**
+```rust
+// Basic message query
+let messages = group.find_messages(&query_args)?;
+
+// With reactions
+let messages = group.find_messages_with_reactions(&query_args)?;
+
+// Enriched messages (with reactions, replies, deletion status)
+let messages = group.find_enriched_messages(&query_args)?;
+```
+
+**Message Deletion:**
+```rust
+let deletion_message_id = group.delete_message(message_id)?;
+```
+
+### Group Updates
+
+**Updating Installations:**
+```rust
+// Check for identity updates and add/remove installations
+group.update_installations().await?;
+```
+
+**Syncing:**
+```rust
+// Sync until all intents are resolved
+group.sync_until_last_intent_resolved().await?;
+```
+
+### Leaving Groups
+
+```rust
+group.leave_group().await?;
+```
+
+**Constraints:**
+- Cannot leave a DM
+- Cannot leave if you're the only member
+- Super admins must be demoted before leaving
+
+## Extensions
+
+Groups use MLS extensions to store additional data:
+
+1. **GroupMetadata** - Immutable group metadata (conversation type, creator, DM members)
+2. **GroupMutableMetadata** - Mutable metadata (name, description, admin lists)
+3. **GroupMutablePermissions** - Permission policies for group actions
+4. **GroupMembers** - Membership tracking extension
+
+See the following pages for detailed information:
+
+- [MlsGroup](./mls-group) - Complete MlsGroup API reference
+- [Permissions](./permissions) - Permission policies and access control
+- [Metadata](./metadata) - Group metadata options and management
+
+## Error Handling
+
+The Groups API uses the `GroupError` enum for error reporting:
+
+```rust
+pub enum GroupError {
+    GroupInactive,
+    UserLimitExceeded,
+    AddressNotFound(Vec<String>),
+    // ... and more
+}
+```
+
+Common errors include:
+- `GroupInactive` - Attempting operations on inactive groups
+- `UserLimitExceeded` - Exceeding MAX_GROUP_SIZE
+- `NotFound::GroupById` - Group not found in database
+- `NotFound::MlsGroup` - OpenMLS group not found
+
+## Integration Notes
+
+### Context Requirements
+
+`MlsGroup` requires a context that implements `XmtpSharedContext`, providing:
+- Database access (`db()`)
+- API client (`api()`)
+- Identity information (`inbox_id()`, `installation_id()`)
+- MLS storage provider (`mls_provider()`)
+- Synchronization primitives (`mutexes()`, `mls_commit_lock()`)
+
+### Thread Safety
+
+Groups use multiple locking mechanisms:
+- Per-group mutex for operation serialization
+- MLS commit lock for atomic MLS operations
+- Database transactions for data integrity
+
+### Storage
+
+Groups persist data across multiple tables:
+- `groups` - Group metadata and state
+- `group_messages` - Message content and metadata
+- `group_intents` - Pending operations
+- OpenMLS keystore - MLS-specific data

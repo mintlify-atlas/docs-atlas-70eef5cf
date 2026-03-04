@@ -1,0 +1,384 @@
+---
+title: ClientBuilder
+description: Fluent API for constructing XMTP clients
+---
+
+The `ClientBuilder` provides a type-safe, fluent API for configuring and creating XMTP clients.
+
+## Structure
+
+```rust
+pub struct ClientBuilder<ApiClient, S, Db = xmtp_db::DefaultStore> {
+    pub(crate) api_client: Option<ApiClient>,
+    pub(crate) identity: Option<Identity>,
+    pub(crate) store: Option<Db>,
+    pub(crate) identity_strategy: IdentityStrategy,
+    pub(crate) scw_verifier: Option<Box<dyn SmartContractSignatureVerifier>>,
+    pub(crate) device_sync_worker_mode: DeviceSyncMode,
+    pub(crate) fork_recovery_opts: Option<ForkRecoveryOpts>,
+    pub(crate) version_info: VersionInfo,
+    pub(crate) allow_offline: bool,
+    pub(crate) disable_commit_log_worker: bool,
+    pub(crate) mls_storage: Option<S>,
+    pub(crate) sync_api_client: Option<ApiClient>,
+    pub(crate) cursor_store: Option<Arc<dyn CursorStore>>,
+    pub(crate) disable_workers: bool,
+}
+```
+
+## Creating a Builder
+
+### From Client
+
+```rust
+let builder = Client::builder(identity_strategy);
+```
+
+<ParamField path="identity_strategy" type="IdentityStrategy" required>
+  Strategy for initializing or loading the client's identity. Options:
+  - `IdentityStrategy::new(inbox_id, account_identifier, nonce, legacy_identity)` - Create new or restore existing
+  - `IdentityStrategy::CachedOnly` - Load from local database only
+</ParamField>
+
+### Direct Construction
+
+```rust
+let builder = ClientBuilder::<(), ()>::new(identity_strategy);
+```
+
+## Configuration Methods
+
+### Required Configuration
+
+#### `api_clients(api_client, sync_api_client)`
+
+Set both the main API client and sync API client.
+
+<ParamField path="api_client" type="impl XmtpApi + XmtpQuery + 'static" required>
+  Client for network operations (publishing, querying)
+</ParamField>
+
+<ParamField path="sync_api_client" type="impl XmtpApi + XmtpQuery + 'static" required>
+  Client for background sync operations
+</ParamField>
+
+**Returns:** `ClientBuilder<A, S, Db>` with new API client type
+
+```rust
+builder.api_clients(grpc_client.clone(), grpc_client.clone())
+```
+
+#### `store(db)`
+
+Set the encrypted message store.
+
+<ParamField path="db" type="impl XmtpDb" required>
+  Database implementation (typically `EncryptedMessageStore<NativeDb>`)
+</ParamField>
+
+**Returns:** `ClientBuilder<ApiClient, S, NewDb>`
+
+```rust
+let store = EncryptedMessageStore::new(db)?;
+builder.store(store)
+```
+
+#### `default_mls_store()`
+
+Use the default SQLite-based MLS key-value store. Must be called after `store()`.
+
+**Returns:** `Result<ClientBuilder<ApiClient, SqlKeyStore, Db>, ClientBuilderError>`
+
+```rust
+builder.default_mls_store()?
+```
+
+#### `mls_storage(storage)`
+
+Provide a custom MLS storage implementation.
+
+<ParamField path="storage" type="impl XmtpMlsStorageProvider + 'static" required>
+  Custom MLS storage provider
+</ParamField>
+
+**Returns:** `ClientBuilder<ApiClient, NewS, Db>`
+
+#### Smart Contract Verifier
+
+One of these methods is required:
+
+##### `with_scw_verifier(verifier)`
+
+Provide a custom smart contract signature verifier.
+
+<ParamField path="verifier" type="impl SmartContractSignatureVerifier + 'static" required>
+  Custom verifier implementation
+</ParamField>
+
+```rust
+builder.with_scw_verifier(my_verifier)
+```
+
+##### `with_remote_verifier()`
+
+Use the default API-based verifier. Requires `api_client` to be set first.
+
+**Returns:** `Result<ClientBuilder<ApiClient, S, Db>, ClientBuilderError>`
+
+```rust
+builder.with_remote_verifier()?
+```
+
+### Optional Configuration
+
+#### `identity(identity)`
+
+Provide a pre-initialized identity instead of using the identity strategy.
+
+<ParamField path="identity" type="Identity">
+  Pre-configured identity object
+</ParamField>
+
+```rust
+builder.identity(existing_identity)
+```
+
+#### `device_sync_worker_mode(mode)`
+
+Configure the device sync worker behavior.
+
+<ParamField path="mode" type="DeviceSyncMode">
+  - `DeviceSyncMode::Enabled` - Sync preferences across devices (default)
+  - `DeviceSyncMode::Disabled` - No cross-device sync
+</ParamField>
+
+```rust
+builder.device_sync_worker_mode(DeviceSyncMode::Disabled)
+```
+
+#### `with_device_sync_worker_mode(mode)`
+
+Same as above but accepts `Option<DeviceSyncMode>`.
+
+```rust
+builder.with_device_sync_worker_mode(Some(DeviceSyncMode::Enabled))
+```
+
+#### `fork_recovery_opts(opts)`
+
+Configure fork recovery behavior for handling group state inconsistencies.
+
+<ParamField path="opts" type="ForkRecoveryOpts">
+  Fork recovery configuration:
+  - `enable_recovery_requests`: `ForkRecoveryPolicy` - When to request recovery
+  - `groups_to_request_recovery`: `Vec<String>` - Specific groups to recover
+  - `disable_recovery_responses`: `bool` - Don't respond to recovery requests
+  - `worker_interval_ns`: `Option<u64>` - Custom worker polling interval
+</ParamField>
+
+```rust
+builder.fork_recovery_opts(ForkRecoveryOpts {
+    enable_recovery_requests: ForkRecoveryPolicy::All,
+    groups_to_request_recovery: vec![],
+    disable_recovery_responses: false,
+    worker_interval_ns: None,
+})
+```
+
+#### `version(version_info)`
+
+Set client version information.
+
+<ParamField path="version_info" type="VersionInfo">
+  Version metadata for this client
+</ParamField>
+
+```rust
+builder.version(VersionInfo::default())
+```
+
+#### `maybe_version(version)`
+
+Set version information if provided.
+
+<ParamField path="version" type="Option<VersionInfo>">
+  Optional version metadata
+</ParamField>
+
+```rust
+builder.maybe_version(Some(version_info))
+```
+
+#### `with_allow_offline(allow_offline)`
+
+Skip network calls during client construction.
+
+<ParamField path="allow_offline" type="Option<bool>">
+  If true, don't fetch identity updates from network during build
+</ParamField>
+
+```rust
+builder.with_allow_offline(Some(true))
+```
+
+#### `with_disable_workers(disable_workers)`
+
+Disable background workers (sync, key rotation, etc.).
+
+<ParamField path="disable_workers" type="bool">
+  If true, no background workers will be started
+</ParamField>
+
+```rust
+builder.with_disable_workers(false)
+```
+
+#### `cursor_store(cursor_store)`
+
+Provide a custom cursor store for sync operations.
+
+<ParamField path="cursor_store" type="Arc<dyn CursorStore>">
+  Custom cursor store implementation
+</ParamField>
+
+```rust
+builder.cursor_store(Arc::new(SqliteCursorStore::new(db)))
+```
+
+### Debugging and Monitoring
+
+#### `enable_api_debug_wrapper()`
+
+Wrap the API client to print statistics on errors. Requires `api_client` to be set.
+
+**Returns:** `Result<ClientBuilder<ApiDebugWrapper<ApiClient>, S, Db>, ClientBuilderError>`
+
+```rust
+builder.enable_api_debug_wrapper()?
+```
+
+#### `enable_api_stats()`
+
+Wrap the API client to track statistics. Requires `api_client` to be set.
+
+**Returns:** `Result<ClientBuilder<TrackedStatsClient<ApiClient>, S, Db>, ClientBuilderError>`
+
+```rust
+builder.enable_api_stats()?
+```
+
+## Building the Client
+
+### `build()`
+
+Asynchronously build the client, potentially making network calls.
+
+**Returns:** `Result<Client<ContextParts<ApiClient, S, Db>>, ClientBuilderError>`
+
+```rust
+let client = builder.build().await?;
+```
+
+**Process:**
+1. Validates all required parameters are set
+2. Wraps API clients with retry logic
+3. Initializes or loads identity based on strategy
+4. Loads identity updates from network (unless `allow_offline` is true)
+5. Creates shared context with all dependencies
+6. Registers and spawns background workers (unless disabled)
+7. Performs cleanup of old data
+
+### `build_offline()`
+
+Build the client synchronously without network access.
+
+**Returns:** `Result<Client<ContextParts<ApiClient, S, Db>>, ClientBuilderError>`
+
+Fails with `ClientBuilderError::OfflineBuildFailed` if network access would be required.
+
+```rust
+let client = builder.build_offline()?;
+```
+
+## Type Parameters
+
+The builder uses three generic type parameters:
+
+<ParamField path="ApiClient" type="type">
+  Type implementing `XmtpApi + XmtpQuery + 'static`
+  
+  Typically `XmtpApiClient` or wrapped variants like `ApiDebugWrapper<XmtpApiClient>`
+</ParamField>
+
+<ParamField path="S" type="type">
+  MLS storage provider type implementing `XmtpMlsStorageProvider + 'static`
+  
+  Typically `SqlKeyStore<DbQuery>`
+</ParamField>
+
+<ParamField path="Db" type="type">
+  Database type implementing `XmtpDb + 'static`
+  
+  Defaults to `xmtp_db::DefaultStore`. Typically `EncryptedMessageStore<NativeDb>`
+</ParamField>
+
+## Error Types
+
+```rust
+pub enum ClientBuilderError {
+    AddressValidation(IdentifierValidationError),
+    MissingParameter { parameter: &'static str },
+    ClientError(crate::client::ClientError),
+    StorageError(StorageError),
+    Identity(crate::identity::IdentityError),
+    WrappedApiError(xmtp_api::ApiError),
+    GroupError(Box<crate::groups::GroupError>),
+    DeviceSync(Box<crate::worker::device_sync::DeviceSyncError>),
+    OfflineBuildFailed,
+}
+```
+
+## Complete Example
+
+```rust
+use xmtp_mls::{
+    Client, builder::DeviceSyncMode,
+    identity::IdentityStrategy,
+};
+use xmtp_db::{EncryptedMessageStore, NativeDb};
+use xmtp_id::associations::Identifier;
+
+// Set up database
+let db = NativeDb::builder().persistent("./db.sqlite").build()?;
+let store = EncryptedMessageStore::new(db)?;
+
+// Create API clients
+let api_client = XmtpApiClient::create(...)?;
+
+// Define identity
+let inbox_id = "inbox_123";
+let identifier = Identifier::Address("0x...".to_string());
+let identity_strategy = IdentityStrategy::new(
+    inbox_id.to_string(),
+    identifier,
+    1, // nonce
+    None, // legacy_identity
+);
+
+// Build client
+let client = Client::builder(identity_strategy)
+    .api_clients(api_client.clone(), api_client.clone())
+    .store(store)
+    .default_mls_store()?
+    .with_remote_verifier()?
+    .device_sync_worker_mode(DeviceSyncMode::Enabled)
+    .enable_api_stats()?
+    .build()
+    .await?;
+```
+
+## See Also
+
+- [Client Overview](/api/client/overview)
+- [Client Methods](/api/client/methods)
+- Source: `crates/xmtp_mls/src/builder.rs:70`

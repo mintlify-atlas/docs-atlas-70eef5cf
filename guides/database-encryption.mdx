@@ -1,0 +1,531 @@
+---
+title: Database Encryption
+description: Secure your LibXMTP database with SQLCipher encryption
+---
+
+LibXMTP uses SQLite for local storage and supports optional encryption via SQLCipher. This guide covers enabling encryption, managing keys, and best practices for securing user data.
+
+## Overview
+
+Database encryption protects:
+- Message history and content
+- Group metadata and membership
+- User identity and installation keys
+- Consent preferences
+- All local XMTP data
+
+<Warning>
+**Important:** Database encryption is strongly recommended for production applications. However, key derivation, storage, and secure management are the responsibility of the application developer.
+</Warning>
+
+## Enabling Encryption
+
+### Basic Encryption Setup
+
+Provide a 32-byte encryption key when creating the database:
+
+```rust
+use xmtp_db::EncryptedMessageStore;
+use xmtp_db::StorageOption;
+
+// Generate or derive a 32-byte encryption key
+let encryption_key: [u8; 32] = generate_encryption_key();
+
+// Create encrypted database
+let db = EncryptedMessageStore::new(
+    StorageOption::Persistent("/path/to/db.sqlite3"),
+    Some(encryption_key.to_vec()),
+)?;
+
+// Use with client builder
+let client = Client::builder(identity_strategy)
+    .store(db)
+    .default_mls_store()?
+    // ... other configuration
+    .build()
+    .await?;
+```
+
+### Without Encryption
+
+For testing or non-sensitive environments:
+
+```rust
+// Unencrypted database (not recommended for production)
+let db = EncryptedMessageStore::new(
+    StorageOption::Persistent("/path/to/db.sqlite3"),
+    None,  // No encryption key
+)?;
+```
+
+<Note>
+If you create a database without encryption, you cannot add encryption later without recreating the database.
+</Note>
+
+## Key Generation
+
+### Secure Random Key
+
+Generate a cryptographically secure key:
+
+```rust
+use rand::RngCore;
+
+fn generate_encryption_key() -> [u8; 32] {
+    let mut key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut key);
+    key
+}
+```
+
+### Derive from Password
+
+Derive a key from a user password using a KDF:
+
+```rust
+use argon2::{Argon2, PasswordHasher};
+use argon2::password_hash::{SaltString, rand_core::OsRng};
+
+fn derive_key_from_password(password: &str, salt: &[u8]) -> Result<[u8; 32], Error> {
+    let argon2 = Argon2::default();
+    let salt_string = SaltString::encode_b64(salt).map_err(|_| Error::InvalidSalt)?;
+    
+    let hash = argon2.hash_password(password.as_bytes(), &salt_string)
+        .map_err(|_| Error::KeyDerivation)?;
+    
+    let key_bytes = hash.hash.ok_or(Error::KeyDerivation)?;
+    let mut key = [0u8; 32];
+    key.copy_from_slice(&key_bytes.as_bytes()[..32]);
+    
+    Ok(key)
+}
+```
+
+<Warning>
+Always use a proper Key Derivation Function (KDF) like Argon2, PBKDF2, or scrypt. Never use plain password hashing algorithms like SHA-256 for key derivation.
+</Warning>
+
+### Platform-Specific Storage
+
+Store encryption keys securely using platform keychains:
+
+<Tabs>
+  <Tab title="iOS (Keychain)">
+    ```swift
+    import Security
+    
+    func saveEncryptionKey(_ key: Data, identifier: String) -> Bool {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: identifier,
+            kSecValueData as String: key,
+            kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+        ]
+        
+        SecItemDelete(query as CFDictionary)  // Delete any existing
+        return SecItemAdd(query as CFDictionary, nil) == errSecSuccess
+    }
+    
+    func loadEncryptionKey(identifier: String) -> Data? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrAccount as String: identifier,
+            kSecReturnData as String: true
+        ]
+        
+        var result: AnyObject?
+        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else {
+            return nil
+        }
+        return result as? Data
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Android (Keystore)">
+    ```kotlin
+    import android.security.keystore.KeyGenParameterSpec
+    import android.security.keystore.KeyProperties
+    import java.security.KeyStore
+    import javax.crypto.KeyGenerator
+    import javax.crypto.SecretKey
+    
+    fun generateOrGetKey(alias: String): ByteArray {
+        val keyStore = KeyStore.getInstance("AndroidKeyStore")
+        keyStore.load(null)
+        
+        if (!keyStore.containsAlias(alias)) {
+            val keyGenerator = KeyGenerator.getInstance(
+                KeyProperties.KEY_ALGORITHM_AES,
+                "AndroidKeyStore"
+            )
+            
+            val spec = KeyGenParameterSpec.Builder(
+                alias,
+                KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
+            )
+                .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
+                .setEncryptionPaddings(KeyProperties.ENCRYPTION_PADDING_NONE)
+                .setKeySize(256)
+                .build()
+            
+            keyGenerator.init(spec)
+            keyGenerator.generateKey()
+        }
+        
+        val secretKey = keyStore.getKey(alias, null) as SecretKey
+        return secretKey.encoded
+    }
+    ```
+  </Tab>
+  
+  <Tab title="Node.js">
+    ```typescript
+    import { createSecureKey, generateKey } from '@xmtp/node-sdk'
+    import * as fs from 'fs'
+    import * as path from 'path'
+    
+    // Generate and save encryption key
+    function generateEncryptionKey(): Uint8Array {
+      const key = generateKey()  // 32 random bytes
+      
+      // Save to secure location with restricted permissions
+      const keyPath = path.join(process.env.HOME!, '.xmtp', 'encryption.key')
+      fs.writeFileSync(keyPath, key, { mode: 0o600 })
+      
+      return key
+    }
+    
+    // Load existing key
+    function loadEncryptionKey(): Uint8Array | null {
+      const keyPath = path.join(process.env.HOME!, '.xmtp', 'encryption.key')
+      
+      if (!fs.existsSync(keyPath)) {
+        return null
+      }
+      
+      return new Uint8Array(fs.readFileSync(keyPath))
+    }
+    ```
+  </Tab>
+</Tabs>
+
+## SQLCipher Configuration
+
+### Verify SQLCipher Support
+
+Check if SQLCipher is available:
+
+```rust
+// SQLCipher is automatically enabled on native platforms
+// WASM does not support encryption
+
+#[cfg(not(target_arch = "wasm32"))]
+fn is_sqlcipher_available() -> bool {
+    // SQLCipher is built-in for native
+    true
+}
+
+#[cfg(target_arch = "wasm32")]
+fn is_sqlcipher_available() -> bool {
+    // Encryption not supported in WASM
+    false
+}
+```
+
+### Custom Cipher Settings
+
+SQLCipher uses secure defaults, but you can customize if needed:
+
+```rust
+use xmtp_db::encrypted_store::database::native::sqlcipher_connection::SqlCipherConnection;
+
+// Default settings (recommended):
+// - PRAGMA cipher_page_size = 4096
+// - PRAGMA kdf_iter = 256000
+// - PRAGMA cipher_hmac_algorithm = HMAC_SHA512
+// - PRAGMA cipher_kdf_algorithm = PBKDF2_HMAC_SHA512
+
+// These are applied automatically when you provide an encryption key
+```
+
+<Note>
+The default SQLCipher settings provide strong security. Only modify cipher settings if you have specific security requirements and understand the implications.
+</Note>
+
+## TypeScript (Node.js) Examples
+
+<CodeGroup>
+
+```typescript Create Encrypted Client
+import { createClient, generateKey } from '@xmtp/node-sdk'
+
+// Generate encryption key
+const encryptionKey = generateKey()
+
+// Create client with encryption
+const client = await createClient(
+  user,
+  encryptionKey  // Pass 32-byte key
+)
+
+// Store key securely for next session
+saveKeySecurely(encryptionKey)
+```
+
+```typescript Load Existing Client
+import { createClient } from '@xmtp/node-sdk'
+
+// Load saved encryption key
+const encryptionKey = loadKeySecurely()
+
+if (!encryptionKey) {
+  throw new Error('Encryption key not found')
+}
+
+// Open existing encrypted database
+const client = await createClient(user, encryptionKey)
+```
+
+```typescript Handle Key Errors
+import { createClient } from '@xmtp/node-sdk'
+
+try {
+  const client = await createClient(user, encryptionKey)
+} catch (error) {
+  if (error.message.includes('file is not a database')) {
+    console.error('Wrong encryption key or corrupted database')
+    // Handle: prompt for correct key or recreate database
+  } else {
+    throw error
+  }
+}
+```
+
+</CodeGroup>
+
+## Key Rotation
+
+<Warning>
+SQLCipher does not support online key rotation. To change encryption keys, you must create a new database and migrate data.
+</Warning>
+
+### Migrate to New Key
+
+```rust
+use xmtp_db::EncryptedMessageStore;
+
+fn rotate_encryption_key(
+    old_db_path: &str,
+    old_key: Vec<u8>,
+    new_key: Vec<u8>,
+) -> Result<(), Error> {
+    // Open old database
+    let old_db = EncryptedMessageStore::new(
+        StorageOption::Persistent(old_db_path),
+        Some(old_key),
+    )?;
+    
+    // Create new database with new key
+    let new_db_path = format!("{}.new", old_db_path);
+    let new_db = EncryptedMessageStore::new(
+        StorageOption::Persistent(&new_db_path),
+        Some(new_key),
+    )?;
+    
+    // Export and import data
+    // Note: This requires implementing data migration
+    // LibXMTP doesn't provide built-in migration
+    
+    // After successful migration:
+    std::fs::rename(&new_db_path, old_db_path)?;
+    
+    Ok(())
+}
+```
+
+## Best Practices
+
+<Steps>
+
+### Always Encrypt in Production
+
+Never ship production apps without encryption:
+
+```rust
+#[cfg(debug_assertions)]
+fn create_db(path: &str) -> EncryptedMessageStore {
+    // Development: Allow unencrypted for easier debugging
+    EncryptedMessageStore::new(
+        StorageOption::Persistent(path),
+        None,
+    ).unwrap()
+}
+
+#[cfg(not(debug_assertions))]
+fn create_db(path: &str) -> EncryptedMessageStore {
+    // Production: Always require encryption
+    let key = load_or_generate_key();
+    EncryptedMessageStore::new(
+        StorageOption::Persistent(path),
+        Some(key),
+    ).expect("Failed to create encrypted database")
+}
+```
+
+### Use Platform Keychains
+
+Store keys in OS-provided secure storage:
+
+```rust
+// Good: Use platform keychain
+let key = platform::get_key_from_keychain("xmtp-db-key")?;
+
+// Avoid: Storing key in app preferences
+// let key = preferences.get_string("db_key")?;  // Insecure!
+```
+
+### Handle Wrong Key Gracefully
+
+Provide clear error messages:
+
+```rust
+use xmtp_db::StorageError;
+
+match EncryptedMessageStore::new(path, Some(key)) {
+    Ok(db) => db,
+    Err(StorageError::DbInit(msg)) if msg.contains("file is not a database") => {
+        // Wrong encryption key or corrupted database
+        return Err(AppError::WrongEncryptionKey);
+    }
+    Err(e) => return Err(e.into()),
+}
+```
+
+### Backup Encryption Keys
+
+Provide key backup/recovery mechanisms:
+
+```rust
+// Example: Export encrypted key backup
+fn export_key_backup(key: &[u8], user_password: &str) -> Vec<u8> {
+    // Encrypt key with user password
+    encrypt_with_password(key, user_password)
+}
+
+// Restore from backup
+fn restore_key_backup(backup: &[u8], user_password: &str) -> Result<Vec<u8>, Error> {
+    decrypt_with_password(backup, user_password)
+}
+```
+
+### Test Key Persistence
+
+Ensure keys survive app restarts:
+
+```rust
+#[test]
+fn test_encryption_key_persistence() {
+    // Generate and save key
+    let key = generate_encryption_key();
+    save_key_to_keychain(&key).unwrap();
+    
+    // Simulate app restart
+    drop(key);
+    
+    // Load key
+    let loaded_key = load_key_from_keychain().unwrap();
+    
+    // Verify database opens
+    let db = EncryptedMessageStore::new(
+        StorageOption::Persistent("/tmp/test.db"),
+        Some(loaded_key),
+    ).unwrap();
+}
+```
+
+</Steps>
+
+## Platform Considerations
+
+### Native (iOS/Android)
+
+SQLCipher is fully supported:
+
+```rust
+// Native platforms: Full encryption support
+#[cfg(not(target_arch = "wasm32"))]
+let db = EncryptedMessageStore::new(
+    StorageOption::Persistent(path),
+    Some(encryption_key),
+)?;
+```
+
+### WebAssembly
+
+Encryption is not supported in WASM:
+
+```rust
+// WASM: Encryption key is ignored
+#[cfg(target_arch = "wasm32")]
+let db = EncryptedMessageStore::new(
+    StorageOption::Persistent(path),
+    encryption_key,  // Will log warning and ignore
+)?;
+```
+
+<Note>
+In WASM environments, the database is stored in IndexedDB without encryption. Consider this when handling sensitive data in web applications.
+</Note>
+
+## Troubleshooting
+
+### Database Won't Open
+
+```rust
+// Error: "file is not a database"
+// Cause: Wrong encryption key or corrupted database
+
+// Try with correct key
+let db = EncryptedMessageStore::new(
+    StorageOption::Persistent(path),
+    Some(correct_key),
+)?;
+
+// If still failing, database may be corrupted
+// You'll need to recreate it (data will be lost)
+```
+
+### Performance Impact
+
+Encryption adds minimal overhead:
+
+```rust
+// Encryption overhead is typically < 5%
+// No special optimization needed
+
+let db = EncryptedMessageStore::new(
+    StorageOption::Persistent(path),
+    Some(key),
+)?;  // Performance is comparable to unencrypted
+```
+
+### Key Size Errors
+
+```rust
+// SQLCipher requires exactly 32 bytes (256 bits)
+let key = generate_encryption_key();  // Must be [u8; 32]
+
+assert_eq!(key.len(), 32, "Encryption key must be 32 bytes");
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Creating Clients" icon="user" href="/guides/creating-clients">
+    Learn how to create clients with encrypted storage
+  </Card>
+  <Card title="Consent Management" icon="hand" href="/guides/consent-management">
+    Manage user preferences and privacy
+  </Card>
+</CardGroup>

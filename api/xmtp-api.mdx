@@ -1,0 +1,146 @@
+---
+title: "XMTP API"
+description: "Core XMTP API trait definitions and client wrapper"
+---
+
+## Overview
+
+The `xmtp_api` crate provides the core trait definitions and client wrapper for XMTP API implementations. It defines the `XmtpApi` trait that combines MLS (Messaging Layer Security) client functionality with identity management.
+
+## Source Location
+
+`crates/xmtp_api/src/lib.rs`
+
+## XmtpApi Trait
+
+The `XmtpApi` trait is the primary interface for XMTP API clients. It's a composite trait that requires implementations to support both:
+
+- `XmtpMlsClient` - MLS delivery service operations
+- `XmtpIdentityClient` - Identity service operations
+
+```rust
+pub trait XmtpApi
+where
+    Self: XmtpMlsClient + XmtpIdentityClient,
+{
+}
+```
+
+### XmtpMlsClient
+
+Represents the backend API required for an MLS Delivery Service to be compatible with XMTP.
+
+#### Methods
+
+**Key Package Management**
+- `upload_key_package(request: UploadKeyPackageRequest) -> Result<(), Self::Error>`
+- `fetch_key_packages(request: FetchKeyPackagesRequest) -> Result<FetchKeyPackagesResponse, Self::Error>`
+
+**Message Operations**
+- `send_group_messages(request: SendGroupMessagesRequest) -> Result<(), Self::Error>`
+- `send_welcome_messages(request: SendWelcomeMessagesRequest) -> Result<(), Self::Error>`
+- `query_group_messages(group_id: GroupId) -> Result<Vec<GroupMessage>, Self::Error>`
+- `query_latest_group_message(group_id: GroupId) -> Result<Option<GroupMessage>, Self::Error>`
+- `query_welcome_messages(installation_key: InstallationId) -> Result<Vec<WelcomeMessage>, Self::Error>`
+
+**Commit Log Operations**
+- `publish_commit_log(request: BatchPublishCommitLogRequest) -> Result<(), Self::Error>`
+- `query_commit_log(request: BatchQueryCommitLogRequest) -> Result<BatchQueryCommitLogResponse, Self::Error>`
+- `get_newest_group_message(request: GetNewestGroupMessageRequest) -> Result<Vec<Option<GroupMessageMetadata>>, Self::Error>`
+
+### XmtpIdentityClient
+
+Represents the backend API required for the XMTP Identity Service as described in [XIP-46 Multi-Wallet Identity](https://github.com/xmtp/XIPs/blob/main/XIPs/xip-46-multi-wallet-identity.md).
+
+#### Methods
+
+- `publish_identity_update(request: PublishIdentityUpdateRequest) -> Result<PublishIdentityUpdateResponse, Self::Error>`
+- `get_identity_updates_v2(request: GetIdentityUpdatesV2Request) -> Result<GetIdentityUpdatesV2Response, Self::Error>`
+- `get_inbox_ids(request: GetInboxIdsRequest) -> Result<GetInboxIdsResponse, Self::Error>`
+- `verify_smart_contract_wallet_signatures(request: VerifySmartContractWalletSignaturesRequest) -> Result<VerifySmartContractWalletSignaturesResponse, Self::Error>`
+
+### XmtpMlsStreams
+
+Provides streaming support for MLS operations.
+
+#### Methods
+
+- `subscribe_group_messages(group_ids: &[&GroupId]) -> Result<Self::GroupMessageStream, Self::Error>`
+- `subscribe_group_messages_with_cursors(groups_with_cursors: &TopicCursor) -> Result<Self::GroupMessageStream, Self::Error>`
+- `subscribe_welcome_messages(installations: &[&InstallationId]) -> Result<Self::WelcomeMessageStream, Self::Error>`
+
+## ApiClientWrapper
+
+A generic wrapper that provides retry logic and context to any API client implementation.
+
+```rust
+pub struct ApiClientWrapper<ApiClient> {
+    pub api_client: ApiClient,
+    pub(crate) retry_strategy: Arc<Retry<ExponentialBackoff>>,
+    pub(crate) inbox_id: Option<String>,
+}
+```
+
+### Methods
+
+**Constructor**
+```rust
+pub fn new(api_client: ApiClient, retry_strategy: Retry<ExponentialBackoff>) -> Self
+```
+
+**Map Function**
+```rust
+pub fn map<F, NewApiClient>(self, f: F) -> ApiClientWrapper<NewApiClient>
+where
+    F: FnOnce(ApiClient) -> NewApiClient
+```
+
+Transforms the wrapped API client using a mapping function.
+
+**Attach Inbox ID**
+```rust
+pub fn attach_inbox_id(&mut self, inbox_id: Option<String>)
+```
+
+Attaches an inbox_id context to tracing logs for debugging purposes.
+
+## Error Types
+
+### ApiError
+
+```rust
+pub enum ApiError {
+    Api(Box<dyn RetryableError>),
+    MismatchedKeyPackages {
+        key_packages: usize,
+        installation_keys: usize,
+    },
+    ProtoConversion(xmtp_proto::ConversionError),
+}
+```
+
+The `ApiError` type erases the specific API implementation error (HTTP or gRPC) and implements `RetryableError` to support automatic retry logic.
+
+## Retry Strategies
+
+The `strategies` module provides pre-configured retry strategies:
+
+```rust
+pub fn exponential_cooldown() -> Retry<ExponentialBackoff>
+```
+
+Returns a retry strategy with exponential backoff for handling transient failures.
+
+## Type Aliases
+
+```rust
+pub type Result<T> = std::result::Result<T, ApiError>;
+pub type BoxedXmtpApi<Error> = Box<dyn BoxableXmtpApi<Error>>;
+pub type ArcedXmtpApi<Error> = Arc<dyn BoxableXmtpApi<Error>>;
+```
+
+## Related Crates
+
+- `xmtp_api_grpc` - gRPC implementation of the XmtpApi trait
+- `xmtp_api_d14n` - Decentralized API implementation
+- `xmtp_proto` - Protocol buffer definitions

@@ -1,0 +1,618 @@
+---
+title: Client Lifecycle
+description: Initializing, registering, and managing XMTP clients through their lifecycle
+---
+
+Understanding the client lifecycle is essential for building XMTP applications. This guide covers client initialization, identity registration, and ongoing management.
+
+## Overview
+
+An XMTP client progresses through these stages:
+
+1. **Builder Configuration**: Set up API, storage, and identity
+2. **Client Construction**: Initialize context and workers
+3. **Identity Registration**: Link installation to inbox (if needed)
+4. **Ready State**: Client can create/join groups and send messages
+5. **Lifecycle Management**: Reconnection, cleanup, and shutdown
+
+## Client Architecture
+
+The `Client<Context>` is generic over its context:
+
+```rust
+pub struct Client<Context> {
+    pub context: Context,
+    pub installation_id: InstallationId,
+    pub(crate) local_events: broadcast::Sender<LocalEvents>,
+    pub(crate) workers: Arc<WorkerRunner>,
+}
+```
+
+Typically, `Context` is `Arc<XmtpMlsLocalContext<ApiClient, Db, S>>` containing:
+- Identity and installation keys
+- API client for network communication
+- Database for state and messages
+- MLS storage for cryptographic material
+- Smart contract verifier
+- Locks and mutexes for concurrency
+- Event channels
+
+## Building a Client
+
+### Identity Strategy
+
+Choose how to handle identity:
+
+```rust
+pub enum IdentityStrategy {
+    /// Create identity if database is new, load if exists
+    CreateIfNotFound {
+        inbox_id: String,
+        identifier: Identifier,
+        nonce: u64,
+        credential: XmtpInstallationCredential,
+    },
+    
+    /// Only load from existing database
+    CachedOnly,
+    
+    /// Use externally provided identity
+    External(Identity),
+}
+```
+
+**CreateIfNotFound** (most common):
+- Generates installation keys on first run
+- Derives inbox ID from wallet + nonce
+- Stores identity in database
+- Subsequent runs load from database
+
+**CachedOnly**:
+- For clients that must already exist
+- Fails if database doesn't contain identity
+- Useful for re-initializing after disconnect
+
+**External**:
+- Advanced use case
+- Manually construct `Identity` and pass in
+- Full control over key generation
+
+### Basic Builder Pattern
+
+```rust
+let client = Client::builder(IdentityStrategy::CreateIfNotFound {
+    inbox_id: inbox_id.clone(),
+    identifier: wallet_identifier,
+    nonce: 0,
+    credential: XmtpInstallationCredential::new(),
+})
+.api_clients(api_client, sync_api_client)
+.store(encrypted_store)
+.default_mls_store()?
+.with_scw_verifier(verifier)
+.build()
+.await?;
+```
+
+### Configuration Options
+
+#### API Clients
+
+```rust
+.api_clients(api_client, sync_api_client)
+```
+
+Two API clients are required:
+- **api_client**: Main network operations (send messages, add members)
+- **sync_api_client**: Background sync operations (pull messages, welcomes)
+
+Typically these are the same client, but can be different for advanced scenarios.
+
+#### Storage
+
+```rust
+.store(encrypted_store)
+.default_mls_store()?
+```
+
+**Application Store**:
+- Encrypted SQLite database via `xmtp_db`
+- Stores messages, groups, identity updates, consent
+
+**MLS Store**:
+- Stores OpenMLS state (epochs, key packages, ratchet trees)
+- Default: `SqlKeyStore` backed by same database
+- Can provide custom implementation
+
+<Info>
+Use `EncryptedMessageStore::new()` or `EncryptedMessageStore::new_unencrypted()` to create the application store. Encryption key should be securely stored by the application.
+</Info>
+
+#### Smart Contract Verifier
+
+```rust
+.with_scw_verifier(verifier)
+```
+
+Or use the remote verifier:
+
+```rust
+.with_remote_verifier()?
+```
+
+Required for validating smart contract wallet signatures. Options:
+- **RemoteSignatureVerifier**: Uses XMTP validation service
+- **ChainRpcVerifier**: Validates directly via EVM RPC (requires RPC URLs)
+- Custom implementation
+
+See [Identity System](/concepts/identity-system) for details on signature verification.
+
+#### Workers
+
+```rust
+.with_disable_workers(true)  // Disable background workers
+.device_sync_worker_mode(DeviceSyncMode::Enabled)  // Enable device sync
+```
+
+Workers run in background:
+- **SyncWorker**: Polls for new messages (if device sync enabled)
+- **KeyPackagesCleanerWorker**: Rotates key packages
+- **DisappearingMessagesWorker**: Deletes expired messages
+- **PendingSelfRemoveWorker**: Processes pending member removals
+- **CommitLogWorker**: Publishes commit logs (optional)
+
+Disabling workers is useful for testing or manual control.
+
+#### Optional Configuration
+
+```rust
+.version(VersionInfo { ... })  // Set version metadata
+.with_allow_offline(true)      // Skip network calls during build
+.fork_recovery_opts(opts)      // Configure fork recovery behavior
+```
+
+### Full Example
+
+```rust
+use xmtp_mls::client::{Client, ClientBuilder};
+use xmtp_mls::builder::{IdentityStrategy, DeviceSyncMode};
+use xmtp_id::associations::Identifier;
+use xmtp_cryptography::XmtpInstallationCredential;
+
+let wallet_identifier = Identifier::eth(&wallet_address)?;
+let inbox_id = wallet_identifier.inbox_id(0)?;
+
+let client = ClientBuilder::new(IdentityStrategy::CreateIfNotFound {
+    inbox_id: inbox_id.clone(),
+    identifier: wallet_identifier.clone(),
+    nonce: 0,
+    credential: XmtpInstallationCredential::new(),
+})
+.api_clients(api_client.clone(), api_client.clone())
+.store(encrypted_store)
+.default_mls_store()?
+.with_remote_verifier()?
+.device_sync_worker_mode(DeviceSyncMode::Enabled)
+.build()
+.await?;
+```
+
+## Identity Registration
+
+After building, the client must register its installation with the network.
+
+### Registration States
+
+The client can be in three states:
+
+#### 1. New Inbox (No Previous Registration)
+
+Inbox ID doesn't exist on network:
+
+```rust
+// Build signature request
+let mut signature_request = SignatureRequestBuilder::new(inbox_id)
+    .create_inbox(wallet_identifier.clone(), 0)
+    .add_association(
+        installation_identifier,
+        wallet_identifier.into(),
+    )
+    .build();
+
+// Add installation signature (client can do this)
+let installation_signature = credential.sign(&signature_request.signature_text())?;
+signature_request.add_signature(
+    UnverifiedSignature::InstallationKey(installation_signature),
+    &scw_verifier,
+).await?;
+
+// Application must add wallet signature
+let wallet_signature = wallet.sign(&signature_request.signature_text())?;
+signature_request.add_signature(wallet_signature, &scw_verifier).await?;
+
+// Register with network
+client.register_identity(signature_request).await?;
+```
+
+**What this does**:
+1. Creates inbox on network
+2. Links wallet and installation to inbox
+3. Uploads key package
+4. Publishes identity update
+
+After this, `client.identity().is_ready()` returns `true`.
+
+#### 2. Existing Inbox, New Installation
+
+Inbox exists but this installation isn't registered:
+
+```rust
+let mut signature_request = SignatureRequestBuilder::new(inbox_id)
+    .add_association(
+        installation_identifier,
+        existing_wallet_identifier.into(),
+    )
+    .build();
+
+// Add signatures (installation + existing wallet)
+signature_request.add_signature(installation_sig, &scw_verifier).await?;
+signature_request.add_signature(wallet_sig, &scw_verifier).await?;
+
+client.register_identity(signature_request).await?;
+```
+
+<Note>
+Any wallet already linked to the inbox can sign the `AddAssociation` action. It doesn't have to be the original wallet.
+</Note>
+
+#### 3. Already Registered
+
+Client installation is already registered:
+
+```rust
+if client.identity().is_ready() {
+    println!("Already registered!");
+} else {
+    // Perform registration
+}
+```
+
+`register_identity()` is idempotent and returns immediately if already registered.
+
+### Registration Flow Details
+
+Inside `register_identity()` (from `client.rs:875-942`):
+
+1. **Check if already registered**: Query database for `StoredIdentity`
+   - If exists, mark ready and return
+   
+2. **Generate key package**: Create MLS key package with installation key
+   - Store locally (not uploaded yet)
+   
+3. **Validate signatures**: Verify all signatures before network calls
+   - Prevents polluting network with invalid updates
+   
+4. **Upload key package**: Send to network first
+   - Prevents race where identity update visible but no key package
+   
+5. **Publish identity update**: Make installation visible on network
+   
+6. **Fetch and store**: Download identity updates and store in local DB
+   - Needed for group operations
+   
+7. **Clean up old key packages**: Mark previous packages for deletion
+   
+8. **Mark identity ready**: Set `is_ready()` flag
+
+<Warning>
+Do not attempt to create groups or send messages before `register_identity()` completes. Operations will fail with `IdentityError::UninitializedIdentity`.
+</Warning>
+
+## Key Package Management
+
+### Rotation
+
+Key packages should be rotated after use:
+
+```rust
+client.rotate_and_upload_key_package().await?;
+```
+
+**When to rotate**:
+- After receiving a welcome message (key package consumed)
+- Periodically (recommended but not enforced)
+
+**Automatic rotation**:
+The `KeyPackagesCleanerWorker` handles rotation based on schedule stored in database.
+
+### Manual Queueing
+
+```rust
+client.queue_key_rotation().await?;
+```
+
+Schedules rotation to occur within 5 seconds if none is scheduled.
+
+### Fetching Key Packages
+
+Get current key packages for installations:
+
+```rust
+let packages = client.get_key_packages_for_installation_ids(
+    vec![installation_id_1, installation_id_2],
+).await?;
+
+for (id, result) in packages {
+    match result {
+        Ok(package) => println!("Valid package for {}", hex::encode(id)),
+        Err(e) => eprintln!("Invalid package: {}", e),
+    }
+}
+```
+
+Used internally when adding members to groups.
+
+## Client Operations
+
+### Accessing Client Data
+
+```rust
+// Installation ID
+let installation_id = client.installation_public_key();
+
+// Inbox ID  
+let inbox_id = client.inbox_id();
+
+// Database connection
+let db = client.db();
+
+// Identity
+let identity = client.identity();
+
+// Version info
+let version = client.version_info();
+```
+
+### Checking Registration Status
+
+```rust
+if !client.identity().is_ready() {
+    eprintln!("Client not ready. Call register_identity() first.");
+    return;
+}
+```
+
+All group/message operations check this internally and return `IdentityError::UninitializedIdentity` if not ready.
+
+### Getting Inbox State
+
+```rust
+// Get current association state
+let state = client.inbox_state(true).await?;
+
+println!("Inbox ID: {}", state.inbox_id());
+println!("Recovery address: {:?}", state.recovery_identifier());
+println!("Installations: {:?}", state.installation_ids());
+println!("Addresses: {:?}", state.identifiers());
+```
+
+### Sequence ID
+
+Get current sequence ID for your inbox:
+
+```rust
+let conn = client.db().conn();
+let sequence_id = client.inbox_sequence_id(&conn)?;
+```
+
+Sequence ID increments with each identity update and is used for group membership tracking.
+
+## Lifecycle Management
+
+### Disconnecting Database
+
+Release database connection (useful for mobile):
+
+```rust
+client.release_db_connection()?;
+```
+
+Workers are stopped and database is closed.
+
+### Reconnecting
+
+Reconnect after releasing:
+
+```rust
+client.reconnect_db()?;
+```
+
+Reopens database and restarts workers.
+
+### Waiting for Workers
+
+Ensure sync worker is initialized:
+
+```rust
+client.wait_for_sync_worker_init().await;
+```
+
+Blocks until `SyncWorker` is running and ready.
+
+## Sync Operations
+
+### Sync Welcomes
+
+Discover new groups:
+
+```rust
+let new_groups = client.sync_welcomes().await?;
+println!("Joined {} new groups", new_groups.len());
+```
+
+### Sync All Groups
+
+Update all existing groups:
+
+```rust
+let summary = client.sync_all_welcomes_and_groups(
+    Some(vec![ConsentState::Allowed]),
+).await?;
+
+println!("Synced {} groups", summary.total_groups_synced);
+```
+
+Optionally filter by consent state.
+
+## Error Handling
+
+### Common Errors
+
+**UninitializedIdentity**:
+```rust
+Err(ClientError::Identity(IdentityError::UninitializedIdentity))
+```
+Solution: Call `register_identity()` before performing operations.
+
+**Storage Errors**:
+```rust
+Err(ClientError::Storage(StorageError::...))
+```
+Solution: Check database connection, disk space, encryption key.
+
+**API Errors**:
+```rust
+Err(ClientError::Api(ApiError::...))
+```
+Solution: Check network connectivity, retry with backoff.
+
+### Retryable Errors
+
+Check if error should be retried:
+
+```rust
+use xmtp_common::RetryableError;
+
+if error.is_retryable() {
+    // Retry operation
+} else {
+    // Permanent failure
+}
+```
+
+## Testing
+
+### Test Utilities
+
+Create test clients:
+
+```rust
+use xmtp_cryptography::utils::generate_local_wallet;
+
+let wallet = generate_local_wallet();
+let client = ClientBuilder::new_test_client(&wallet).await;
+```
+
+### Mock Implementations
+
+```rust
+let api = MockApi::new();
+let scw_verifier = MockSmartContractSignatureVerifier::new(false);
+
+let client = ClientBuilder::new(strategy)
+    .api_clients(api.clone(), api)
+    .with_scw_verifier(scw_verifier)
+    .build()
+    .await?;
+```
+
+### Offline Testing
+
+```rust
+let client = ClientBuilder::new(strategy)
+    .with_allow_offline(true)
+    .build()
+    .await?;
+```
+
+Skips network calls during initialization.
+
+## Best Practices
+
+### Secure Key Storage
+
+<Warning>
+The database encryption key must be securely stored by the application. LibXMTP does not manage encryption key storage.
+</Warning>
+
+Recommendations:
+- **Mobile**: Use platform keychain (iOS Keychain, Android Keystore)
+- **Web**: Consider Web Crypto API or secure server-side storage
+- **Desktop**: OS keychain or encrypted file with user password
+
+### Worker Management
+
+For production:
+```rust
+.device_sync_worker_mode(DeviceSyncMode::Enabled)
+```
+
+For testing:
+```rust
+.with_disable_workers(true)
+```
+
+Call sync methods manually when workers disabled.
+
+### Error Recovery
+
+Implement retry logic with exponential backoff for transient errors:
+
+```rust
+use xmtp_common::{retry_async, Retry};
+
+retry_async!(
+    Retry::default(),
+    (async { client.sync_welcomes().await })
+)?;
+```
+
+### Database Migration
+
+Diesel handles migrations automatically. On first run:
+```rust
+let store = EncryptedMessageStore::new(
+    db_path,
+    encryption_key,
+)?;
+// Migrations run during initialization
+```
+
+## Platform-Specific Considerations
+
+### Mobile (iOS/Android)
+
+- Release DB connection when app backgrounds
+- Reconnect when app foregrounds
+- Use platform keychain for encryption key
+- Consider battery impact of sync workers
+
+### Web (WASM)
+
+- Use IndexedDB for storage
+- Workers run in Web Workers (if supported)
+- Consider IndexedDB size limits
+- Handle offline scenarios
+
+### Node.js
+
+- Use file-based SQLite
+- Workers run in Node async runtime
+- Consider clustering for multiple clients
+
+## Related Concepts
+
+- [Architecture](/concepts/architecture) - Overall system design
+- [Identity System](/concepts/identity-system) - Registration details
+- [MLS Protocol](/concepts/mls-protocol) - Key package lifecycle  
+- [Groups and Conversations](/concepts/groups-and-conversations) - Using the client

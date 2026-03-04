@@ -1,0 +1,503 @@
+---
+title: Swift Bindings
+description: UniFFI-based bindings for iOS and macOS applications
+---
+
+The Swift bindings provide native XMTP functionality for iOS and macOS applications using [Mozilla's UniFFI](https://mozilla.github.io/uniffi-rs/). These bindings expose the core LibXMTP Rust library to Swift through automatically generated FFI code.
+
+<Note>
+These bindings are low-level FFI interfaces. For most iOS/macOS development, use the [XMTPiOS SDK](https://github.com/xmtp/xmtp-ios) instead, which provides a Swift-native API built on top of these bindings.
+</Note>
+
+## Installation
+
+The bindings are distributed as an XCFramework through Swift Package Manager:
+
+### Swift Package Manager
+
+Add to your `Package.swift`:
+
+```swift
+dependencies: [
+    .package(
+        url: "https://github.com/xmtp/libxmtp",
+        from: "1.0.0"
+    )
+]
+```
+
+Or in Xcode:
+
+1. File → Add Package Dependencies
+2. Enter repository URL: `https://github.com/xmtp/libxmtp`
+3. Select version and add to your target
+
+### Requirements
+
+- iOS 14.0+ or macOS 11.0+
+- Swift 6.1+
+- Xcode 15.0+
+
+## Architecture
+
+The Swift bindings use **UniFFI** to generate Swift code from Rust, providing memory-safe cross-language communication.
+
+### Key Technologies
+
+- **UniFFI**: Mozilla's tool for generating foreign-language bindings from Rust
+- **XCFramework**: Pre-compiled binary framework containing native code for all Apple platforms
+- **FFI (Foreign Function Interface)**: Low-level interface between Swift and Rust
+- **Tokio Integration**: Rust async runtime with Swift async/await bridging
+
+### Binary Artifacts
+
+The package includes two XCFramework variants:
+
+<Tabs>
+  <Tab title="Static">
+    `LibXMTPSwiftFFI.xcframework` - Statically linked framework (default)
+    - Smaller app size when bundled
+    - No runtime dependencies
+    - Enabled by default trait
+  </Tab>
+  <Tab title="Dynamic">
+    `LibXMTPSwiftFFIDynamic.xcframework` - Dynamically linked framework
+    - Faster incremental builds
+    - Shared library across app extensions
+    - Enable with `dynamic` trait in Package.swift
+  </Tab>
+</Tabs>
+
+### Object Lifetimes
+
+UniFFI manages object lifetimes using `Arc<>` pointers:
+
+- Objects crossing the FFI boundary are wrapped in `Arc<>`
+- Swift ARC automatically releases Rust objects when no longer referenced
+- No manual memory management required
+
+### Async and Concurrency
+
+The bindings use Tokio's multi-threaded runtime:
+
+- Swift async/await calls map to Rust async functions
+- Rust operations may resume on different threads after `await`
+- All exposed objects are `Send + Sync` for thread safety
+- No mutable references (`&mut self`) across FFI boundary
+
+## Basic Usage
+
+Here's a basic example of creating a client and sending messages:
+
+```swift
+import XMTPiOS
+import LibXMTPSwiftFFI
+
+// Generate encryption key for local database
+let encryptionKey = try Crypto.secureRandomBytes(count: 32)
+
+// Configure client options
+let options = ClientOptions(
+    api: ClientOptions.Api(
+        env: .production,
+        isSecure: true,
+        appVersion: "MyApp/1.0.0"
+    ),
+    dbEncryptionKey: encryptionKey
+)
+
+// Create a client with a wallet
+let client = try await Client.create(
+    account: wallet,
+    options: options
+)
+
+// Check if registered
+let isRegistered = client.isRegistered
+print("Client registered: \(isRegistered)")
+
+// Get inbox ID
+let inboxID = client.inboxID
+print("Inbox ID: \(inboxID)")
+
+// Create a group conversation
+let group = try await client.conversations.newGroup(
+    with: ["0x1234...", "0x5678..."],
+    permissions: .allMembers
+)
+
+// Send a message
+try await group.send(content: "Hello, XMTP!", options: nil)
+
+// Stream new messages
+for try await message in group.streamMessages() {
+    print("New message: \(message.content)")
+}
+```
+
+## Development
+
+### Prerequisites
+
+For development, you need:
+
+- macOS with Xcode
+- Rust toolchain
+- Cross-compilation tools for iOS targets
+
+The easiest way is using Nix:
+
+```bash
+# Enter iOS development shell
+nix develop .#ios
+```
+
+### Build Commands
+
+<CodeGroup>
+
+```bash Build XCFramework
+# Build LibXMTPSwiftFFI.xcframework
+./sdks/ios/dev/bindings
+
+# Or using just
+just ios build
+```
+
+```bash Build Swift Package
+# Check that Swift package compiles
+just ios check
+```
+
+```bash Full Build
+# Build bindings + compile Swift package
+just ios build && just ios check
+```
+
+</CodeGroup>
+
+### Linting and Formatting
+
+```bash
+# Run all linting (SwiftLint + SwiftFormat)
+just ios lint
+
+# Format Swift code
+just ios format
+```
+
+Configuration files:
+- `.swiftlint.yml` - SwiftLint configuration
+- `.swiftformat` - SwiftFormat rules
+
+## Testing
+
+### Running Tests
+
+Tests require a running XMTP backend:
+
+```bash
+# Start local backend (from repo root)
+just backend up
+
+# Run tests
+just ios test
+```
+
+### Test Structure
+
+Tests are located in `sdks/ios/Tests/XMTPTests/`:
+
+- `ClientTests.swift` - Client creation and management
+- `ConversationTests.swift` - Conversation operations
+- `GroupTests.swift` - Group messaging
+- `DmTests.swift` - Direct messages
+- `CryptoTests.swift` - Cryptographic operations
+
+### Example Test
+
+```swift
+import XCTest
+@testable import XMTPiOS
+import XMTPTestHelpers
+
+@available(iOS 15, *)
+class ClientTests: XCTestCase {
+    override func setUp() {
+        super.setUp()
+        setupLocalEnv()
+    }
+
+    func testTakesAWallet() async throws {
+        let key = try Crypto.secureRandomBytes(count: 32)
+        let clientOptions = ClientOptions(
+            api: ClientOptions.Api(
+                env: .local,
+                isSecure: false,
+                appVersion: "Testing/0.0.0"
+            ),
+            dbEncryptionKey: key
+        )
+        let fakeWallet = try PrivateKey.generate()
+        let client = try await Client.create(
+            account: fakeWallet,
+            options: clientOptions
+        )
+        try client.deleteLocalDatabase()
+    }
+
+    func testStaticCanMessage() async throws {
+        let fixtures = try await fixtures()
+
+        let canMessageList = try await Client.canMessage(
+            accountIdentities: [
+                fixtures.alix.identity,
+                fixtures.bo.identity,
+            ],
+            api: ClientOptions.Api(
+                env: .local,
+                isSecure: false
+            )
+        )
+
+        XCTAssertEqual(
+            canMessageList[fixtures.alix.walletAddress.lowercased()],
+            true
+        )
+        XCTAssertEqual(
+            canMessageList[fixtures.bo.walletAddress.lowercased()],
+            true
+        )
+
+        try fixtures.cleanUpDatabases()
+    }
+}
+```
+
+## Package Structure
+
+From `Package.swift`:
+
+```swift
+let package = Package(
+    name: "XMTPiOS",
+    platforms: [.iOS(.v14), .macOS(.v11)],
+    products: [
+        .library(
+            name: "XMTPiOS",
+            targets: ["XMTPiOS"]
+        ),
+        .library(
+            name: "XMTPTestHelpers",
+            targets: ["XMTPTestHelpers"]
+        ),
+    ],
+    traits: [
+        "static",
+        "dynamic",
+        .default(enabledTraits: ["static"]),
+    ],
+    dependencies: [
+        .package(url: "https://github.com/bufbuild/connect-swift", exact: "1.2.0"),
+        .package(url: "https://github.com/krzyzanowskim/CryptoSwift.git", "1.8.4"..<"2.0.0"),
+        .package(url: "https://github.com/apple/swift-docc-plugin.git", from: "1.4.3"),
+        .package(url: "https://github.com/SimplyDanny/SwiftLintPlugins", from: "0.62.1"),
+    ]
+)
+```
+
+## Key Dependencies
+
+<Tabs>
+  <Tab title="Runtime">
+    - `LibXMTPSwiftFFI` - FFI bindings (local XCFramework)
+    - `Connect` - gRPC client for Swift
+    - `CryptoSwift` - Cryptographic utilities
+  </Tab>
+  <Tab title="Development">
+    - `swift-docc-plugin` - Documentation generation
+    - `SwiftLintPlugins` - Code linting
+  </Tab>
+</Tabs>
+
+## Advanced Patterns
+
+### Database Encryption
+
+All local data is encrypted using a key you provide:
+
+```swift
+// Generate a secure random key
+let encryptionKey = try Crypto.secureRandomBytes(count: 32)
+
+// Store this key securely (Keychain recommended)
+let keychain = Keychain(service: "com.myapp.xmtp")
+try keychain.set(encryptionKey, key: "dbEncryptionKey")
+
+// Use the key when creating a client
+let options = ClientOptions(
+    api: .init(env: .production, isSecure: true),
+    dbEncryptionKey: encryptionKey
+)
+```
+
+### Environment Configuration
+
+```swift
+// Production environment
+let prodOptions = ClientOptions(
+    api: .init(
+        env: .production,
+        isSecure: true,
+        appVersion: "MyApp/1.0.0"
+    ),
+    dbEncryptionKey: key
+)
+
+// Development environment
+let devOptions = ClientOptions(
+    api: .init(
+        env: .dev,
+        isSecure: true,
+        appVersion: "MyApp/1.0.0-dev"
+    ),
+    dbEncryptionKey: key
+)
+
+// Local testing
+let localOptions = ClientOptions(
+    api: .init(
+        env: .local,
+        isSecure: false,
+        appVersion: "MyApp/Testing"
+    ),
+    dbEncryptionKey: key
+)
+```
+
+### Inbox State Management
+
+```swift
+// Get current inbox state
+let inboxState = try await client.inboxState(refreshFromNetwork: true)
+
+print("Inbox ID: \(inboxState.inboxId)")
+print("Installations: \(inboxState.installations.count)")
+print("Recovery address: \(inboxState.recoveryAddress)")
+
+// Get inbox states for multiple inboxes
+let inboxStates = try await Client.inboxStatesForInboxIds(
+    inboxIds: [inboxId1, inboxId2],
+    api: .init(env: .production, isSecure: true)
+)
+```
+
+### Streaming Updates
+
+```swift
+// Stream all conversations
+for try await conversation in client.conversations.stream() {
+    print("New conversation: \(conversation.id)")
+}
+
+// Stream messages in a conversation
+for try await message in group.streamMessages() {
+    print("From: \(message.senderInboxId)")
+    print("Content: \(message.content)")
+}
+
+// Stream with callback
+let stream = try await group.streamMessages { message in
+    Task {
+        await handleNewMessage(message)
+    }
+}
+```
+
+## Performance Considerations
+
+### Memory Management
+
+- UniFFI uses Arc for shared ownership between Swift and Rust
+- Swift ARC automatically deallocates objects
+- Large data transfers are zero-copy where possible
+
+### Threading
+
+- Tokio runtime uses multiple threads for Rust operations
+- Swift async/await integrates seamlessly
+- All callbacks are Send + Sync safe
+
+### Database Performance
+
+- SQLite with encryption (SQLCipher)
+- Write-ahead logging (WAL) enabled
+- Connection pooling for concurrent access
+
+## Troubleshooting
+
+### Framework Not Found
+
+If you see "Framework not found LibXMTPSwiftFFI":
+
+```bash
+# Rebuild the xcframework
+./sdks/ios/dev/bindings
+```
+
+### Database Errors
+
+If you encounter database errors:
+
+```swift
+// Delete local database
+try client.deleteLocalDatabase()
+
+// Create a new client
+let newClient = try await Client.create(
+    account: wallet,
+    options: options
+)
+```
+
+### Async Context Required
+
+Many methods require async context:
+
+```swift
+// ❌ Wrong - no async context
+let client = Client.create(account: wallet, options: options)
+
+// ✅ Correct - in async function
+func setupClient() async throws {
+    let client = try await Client.create(
+        account: wallet,
+        options: options
+    )
+}
+
+// ✅ Correct - with Task
+Task {
+    let client = try await Client.create(
+        account: wallet,
+        options: options
+    )
+}
+```
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="UniFFI Documentation" icon="book" href="https://mozilla.github.io/uniffi-rs/">
+    Learn about the UniFFI framework
+  </Card>
+  <Card title="Source Code" icon="github" href="https://github.com/xmtp/libxmtp/tree/main/bindings/mobile">
+    View the bindings source code
+  </Card>
+  <Card title="XMTPiOS SDK" icon="code" href="https://github.com/xmtp/xmtp-ios">
+    Use the high-level Swift SDK
+  </Card>
+  <Card title="Example Tests" icon="flask" href="https://github.com/xmtp/libxmtp/tree/main/sdks/ios/Tests">
+    See real usage examples
+  </Card>
+</CardGroup>

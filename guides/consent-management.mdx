@@ -1,0 +1,482 @@
+---
+title: Consent Management
+description: Manage user consent preferences and control unwanted messages in LibXMTP
+---
+
+Consent management allows users to control which conversations and contacts they interact with. This guide covers setting consent preferences, filtering conversations, and handling blocked users.
+
+## Consent States
+
+LibXMTP tracks consent at three levels:
+
+```rust
+use xmtp_db::consent_record::ConsentState;
+
+pub enum ConsentState {
+    Unknown,   // No explicit preference set
+    Allowed,   // User has allowed this entity
+    Denied,    // User has blocked/denied this entity
+}
+```
+
+## Consent Types
+
+Consent can be tracked for different entity types:
+
+```rust
+use xmtp_db::consent_record::ConsentType;
+
+pub enum ConsentType {
+    ConversationId,  // Specific group/conversation
+    InboxId,         // Entire inbox (all their conversations)
+    Address,         // Wallet address
+}
+```
+
+## Setting Consent
+
+### For Conversations
+
+Set consent for a specific group:
+
+```rust
+use xmtp_db::consent_record::{ConsentState, ConsentType, StoredConsentRecord};
+
+// Allow a conversation
+let consent_record = StoredConsentRecord::new(
+    hex::encode(&group.group_id),
+    ConsentType::ConversationId,
+    ConsentState::Allowed,
+);
+
+client.set_consent_states(&[consent_record]).await?;
+```
+
+Or use the group helper:
+
+```rust
+// Update consent directly on the group
+group.update_consent_state(ConsentState::Allowed)?;
+
+// Check current state
+let state = group.consent_state()?;
+assert_eq!(state, ConsentState::Allowed);
+```
+
+### For Inbox IDs
+
+Block all conversations from a specific inbox:
+
+```rust
+let consent_record = StoredConsentRecord::new(
+    target_inbox_id.to_string(),
+    ConsentType::InboxId,
+    ConsentState::Denied,
+);
+
+client.set_consent_states(&[consent_record]).await?;
+```
+
+### For Addresses
+
+Set consent by wallet address:
+
+```rust
+let consent_record = StoredConsentRecord::new(
+    "0x1234...".to_string(),
+    ConsentType::Address,
+    ConsentState::Denied,
+);
+
+client.set_consent_states(&[consent_record]).await?;
+```
+
+### Batch Updates
+
+Update multiple consent preferences at once:
+
+```rust
+let records = vec![
+    StoredConsentRecord::new(
+        inbox_id_1.to_string(),
+        ConsentType::InboxId,
+        ConsentState::Allowed,
+    ),
+    StoredConsentRecord::new(
+        inbox_id_2.to_string(),
+        ConsentType::InboxId,
+        ConsentState::Denied,
+    ),
+    StoredConsentRecord::new(
+        hex::encode(&group_id),
+        ConsentType::ConversationId,
+        ConsentState::Allowed,
+    ),
+];
+
+client.set_consent_states(&records).await?;
+```
+
+## Querying Consent
+
+### Get Consent State
+
+Check consent for a specific entity:
+
+```rust
+use xmtp_db::consent_record::ConsentType;
+
+// Check group consent
+let state = client.get_consent_state(
+    ConsentType::ConversationId,
+    hex::encode(&group_id),
+).await?;
+
+match state {
+    ConsentState::Allowed => println!("Conversation allowed"),
+    ConsentState::Denied => println!("Conversation blocked"),
+    ConsentState::Unknown => println!("No preference set"),
+}
+
+// Check inbox consent
+let state = client.get_consent_state(
+    ConsentType::InboxId,
+    inbox_id.to_string(),
+).await?;
+```
+
+### Query Groups by Consent
+
+Filter conversations by consent state:
+
+```rust
+use xmtp_db::group::{GroupQueryArgs, GroupMembershipState};
+
+// Get only allowed conversations
+let args = GroupQueryArgs::default()
+    .consent_states(Some(vec![ConsentState::Allowed]));
+
+let allowed_groups = client.find_groups(args)?;
+
+// Get blocked conversations
+let denied_args = GroupQueryArgs::default()
+    .consent_states(Some(vec![ConsentState::Denied]));
+
+let blocked_groups = client.find_groups(denied_args)?;
+```
+
+## Default Consent Behavior
+
+### Group Creation
+
+When you create a group, consent defaults to `Allowed`:
+
+```rust
+let group = client.create_group(None, None)?;
+
+// Consent is automatically set to Allowed
+assert_eq!(group.consent_state()?, ConsentState::Allowed);
+```
+
+### Receiving Invites
+
+When invited to a group, consent defaults to `Unknown`:
+
+```rust
+// User receives a welcome message
+client.sync_welcomes().await?;
+
+let groups = client.find_groups(GroupQueryArgs::default())?;
+for group in groups {
+    let state = group.consent_state()?;
+    if state == ConsentState::Unknown {
+        println!("New invitation - no consent set yet");
+    }
+}
+```
+
+## Filtering Streams
+
+Consent preferences automatically filter message streams:
+
+### Stream Allowed Messages Only
+
+```rust
+use xmtp_db::consent_record::ConsentState;
+
+// Only receive messages from allowed conversations
+let stream = client.stream_all_messages(
+    None,  // conversation_type
+    Some(vec![ConsentState::Allowed]),  // consent filter
+).await?;
+
+while let Some(message) = stream.next().await {
+    // Only messages from allowed conversations
+    process_message(message);
+}
+```
+
+### Stream All Conversations
+
+Include both allowed and unknown (new invites):
+
+```rust
+let stream = client.stream_all_messages(
+    None,
+    Some(vec![ConsentState::Allowed, ConsentState::Unknown]),
+).await?;
+```
+
+## Sync with Consent Filtering
+
+Sync only groups matching consent preferences:
+
+```rust
+// Sync only allowed and unknown groups
+let summary = client.sync_all_welcomes_and_groups(
+    Some(vec![ConsentState::Allowed, ConsentState::Unknown])
+).await?;
+
+println!("Synced {} groups", summary.num_groups_synced);
+```
+
+## Device Sync
+
+Consent preferences sync across installations:
+
+```rust
+// On device 1: Set consent
+group.update_consent_state(ConsentState::Denied)?;
+
+// On device 2: Consent is automatically synced
+client.sync_welcomes().await?;
+let synced_group = client.group(&group.group_id)?;
+assert_eq!(synced_group.consent_state()?, ConsentState::Denied);
+```
+
+<Note>
+Consent preferences are synced between your installations via the device sync mechanism. Changes on one device will propagate to other devices.
+</Note>
+
+## TypeScript (Node.js) Examples
+
+<CodeGroup>
+
+```typescript Set Consent
+import { ConsentState, ConsentEntityType } from '@xmtp/node-sdk'
+
+// Allow a conversation
+await client.setConsentStates([{
+  entityType: ConsentEntityType.GroupId,
+  entity: conversation.id(),
+  state: ConsentState.Allowed
+}])
+
+// Block an inbox
+await client.setConsentStates([{
+  entityType: ConsentEntityType.InboxId,
+  entity: targetInboxId,
+  state: ConsentState.Denied
+}])
+```
+
+```typescript Query Consent
+// Get consent state
+const state = await client.getConsentState(
+  ConsentEntityType.GroupId,
+  conversation.id()
+)
+
+if (state === ConsentState.Denied) {
+  console.log('This conversation is blocked')
+}
+
+// Update using conversation helper
+conversation.updateConsentState(ConsentState.Allowed)
+const newState = conversation.consentState()
+```
+
+```typescript Filter by Consent
+// Stream only allowed messages
+const stream = await client.conversations().streamAllMessages(
+  (error, message) => {
+    if (message) {
+      console.log('Allowed message:', message.content)
+    }
+  },
+  () => console.log('Stream closed'),
+  { consentState: [ConsentState.Allowed] }
+)
+```
+
+</CodeGroup>
+
+## Handling Unwanted Conversations
+
+<Steps>
+
+### Detect Unwanted Groups
+
+Identify groups with unknown consent:
+
+```rust
+let groups = client.find_groups(
+    GroupQueryArgs::default()
+        .consent_states(Some(vec![ConsentState::Unknown]))
+)?;
+
+for group in groups {
+    let metadata = group.metadata()?;
+    println!("New group: {:?}", metadata.group_name);
+    println!("Added by: {}", group.added_by_inbox_id()?);
+    
+    // Let user decide
+    // group.update_consent_state(ConsentState::Allowed)?;
+    // or
+    // group.update_consent_state(ConsentState::Denied)?;
+}
+```
+
+### Block and Leave
+
+Block a conversation and optionally leave:
+
+```rust
+// Block the conversation
+group.update_consent_state(ConsentState::Denied)?;
+
+// Optionally leave the group
+group.leave().await?;
+```
+
+### Unblock
+
+Change consent back to allowed:
+
+```rust
+// Unblock
+group.update_consent_state(ConsentState::Allowed)?;
+
+// Group messages will now be received
+```
+
+</Steps>
+
+## Best Practices
+
+<Steps>
+
+### Set Consent on Group Creation
+
+When creating groups for others, consent is already set to allowed:
+
+```rust
+let group = client.create_group(None, None)?;
+assert_eq!(group.consent_state()?, ConsentState::Allowed);
+// No need to set consent explicitly
+```
+
+### Prompt for Consent on Invites
+
+When receiving invites, prompt users:
+
+```rust
+let new_groups = client.sync_welcomes().await?;
+
+for group in new_groups {
+    if group.consent_state()? == ConsentState::Unknown {
+        let metadata = group.metadata()?;
+        
+        // Show UI to user
+        // "Accept invitation to: {:?}?", metadata.group_name
+        
+        // Based on user choice:
+        // group.update_consent_state(ConsentState::Allowed)?;
+        // or
+        // group.update_consent_state(ConsentState::Denied)?;
+    }
+}
+```
+
+### Filter Streams by Consent
+
+Always filter message streams to respect user preferences:
+
+```rust
+// Good: Only show allowed messages
+let stream = client.stream_all_messages(
+    None,
+    Some(vec![ConsentState::Allowed]),
+).await?;
+
+// Also good: Include unknown for new invites
+let stream = client.stream_all_messages(
+    None,
+    Some(vec![ConsentState::Allowed, ConsentState::Unknown]),
+).await?;
+
+// Avoid: Showing denied conversations
+// let stream = client.stream_all_messages(None, None).await?;
+```
+
+### Sync Consent Preferences
+
+Ensure consent syncs across devices:
+
+```rust
+// Device sync is enabled by default
+let client = Client::builder(identity_strategy)
+    .device_sync_worker_mode(DeviceSyncMode::Enabled)
+    // ... other config
+    .build().await?;
+
+// Consent changes will sync automatically
+```
+
+</Steps>
+
+## Consent and Direct Messages
+
+DM consent works the same as groups:
+
+```rust
+// Create DM (consent defaults to Allowed)
+let dm = client.find_or_create_dm(target_inbox_id, None).await?;
+assert_eq!(dm.consent_state()?, ConsentState::Allowed);
+
+// Block DM partner
+dm.update_consent_state(ConsentState::Denied)?;
+
+// Or block their entire inbox
+let consent_record = StoredConsentRecord::new(
+    target_inbox_id.to_string(),
+    ConsentType::InboxId,
+    ConsentState::Denied,
+);
+client.set_consent_states(&[consent_record]).await?;
+```
+
+## Error Handling
+
+```rust
+use xmtp_db::StorageError;
+
+match group.update_consent_state(ConsentState::Denied) {
+    Ok(_) => println!("Consent updated"),
+    Err(e) => {
+        eprintln!("Failed to update consent: {}", e);
+        // Handle error - maybe retry or notify user
+    }
+}
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Database Encryption" icon="lock" href="/guides/database-encryption">
+    Secure your local data with encryption
+  </Card>
+  <Card title="Managing Groups" icon="users" href="/guides/managing-groups">
+    Learn more about group management
+  </Card>
+</CardGroup>

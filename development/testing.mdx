@@ -1,0 +1,236 @@
+---
+title: Testing
+description: Learn how to run tests and use test utilities in LibXMTP
+---
+
+LibXMTP uses comprehensive testing across multiple platforms and environments.
+
+## Running Tests
+
+### Workspace Tests
+
+<CodeGroup>
+```bash All Tests
+just test
+```
+
+```bash V3 Tests Only
+just test v3
+```
+
+```bash D14N Tests Only
+just test d14n
+```
+
+```bash Specific Crate
+just test crate xmtp_mls
+```
+</CodeGroup>
+
+### Platform-Specific Tests
+
+<CodeGroup>
+```bash WebAssembly (Headless)
+just wasm test
+```
+
+```bash Node.js
+just node test
+```
+
+```bash iOS Swift
+just ios test
+```
+
+```bash Android
+just android test
+```
+</CodeGroup>
+
+### Direct Cargo Commands
+
+You can also run tests directly with cargo:
+
+```bash
+RUST_LOG=off cargo test
+```
+
+<Info>
+  Many team members use `cargo nextest` for better test isolation and log output behavior:
+  
+  ```bash
+  cargo nextest run
+  ```
+</Info>
+
+### Interactive WebAssembly Tests
+
+For interactive testing of a specific package:
+
+```bash
+dev/test/wasm-interactive xmtp_mls
+```
+
+### Browser SDK Tests
+
+```bash
+dev/test/browser-sdk
+```
+
+## Test Log Output Control
+
+LibXMTP provides several environment variables to control test log output:
+
+### Contextual Logging
+
+Output test logs in an async-aware, context-specific tree format:
+
+```bash
+CONTEXTUAL=1 cargo test
+```
+
+<Note>
+  Contextual logging supports `TestLogReplace` for replacing IDs with human-readable names.
+</Note>
+
+### Filtering by Crate
+
+Control log levels for specific crates:
+
+```bash
+RUST_LOG=xmtp_mls=debug,xmtp_api=off,xmtp_id=info cargo test
+```
+
+### Structured JSON Logging
+
+Output logs in JSON format for inspection with third-party viewers:
+
+```bash
+STRUCTURED=1 cargo test
+```
+
+## Making Logs More Readable
+
+Replace InboxIds/InstallationIds/EthAddresses with human-readable names in logs.
+
+<Note>
+  This only works with the `CONTEXTUAL=1` flag enabled.
+</Note>
+
+### Method 1: TestLogReplace
+
+Add a `TestLogReplace` declaration at the top of your test:
+
+```rust
+let mut replace = TestLogReplace::default();
+replace.add(alix.installation_id(), "alix_installation_id");
+```
+
+Replacements are active until the `TestLogReplace` object is dropped.
+
+### Method 2: TesterBuilder with Names
+
+Build the `TesterBuilder` with a name:
+
+```rust
+let tester = Tester::builder().with_name("alix").build().await;
+```
+
+This automatically replaces:
+- InboxIds with `"alix"`
+- InstallationIds with `"alix_installation"`
+- Identifiers with `"alix_identifier"`
+
+## Writing Tests
+
+### Test Macro
+
+<Note>
+  **ALWAYS use `#[xmtp_common::test(unwrap_try = true)]` instead of `#[test]`**
+  
+  This ensures tests run in both native and WASM environments.
+</Note>
+
+```rust
+#[xmtp_common::test(unwrap_try = true)]
+async fn test_simple() {
+    // Can use ? operator freely
+    let result = async_function().await?;
+    assert_eq!(result, expected);
+}
+```
+
+The `unwrap_try = true` parameter automatically unwraps `?` operators, providing better error messages.
+
+### Parameterized Tests
+
+Use `rstest` for parameterized tests:
+
+```rust
+#[rstest]
+#[case("input1", "expected1")]
+#[case("input2", "expected2")]
+fn test_function(#[case] input: &str, #[case] expected: &str) {
+    assert_eq!(function_to_test(input), expected);
+}
+```
+
+### Tests Requiring Wallets
+
+Use the `tester!` macro for tests that need a wallet:
+
+```rust
+#[xmtp_common::test(unwrap_try = true)]
+async fn test_with_wallet() {
+    let tester = tester!();
+    // Test implementation
+}
+```
+
+## Code Coverage
+
+### Generate and View Coverage
+
+Run tests and open the coverage report in your browser:
+
+```bash
+./dev/test/coverage
+```
+
+This script uses `cargo llvm-cov` to generate both lcov and HTML reports.
+
+### IDE Integration
+
+If you have the "Coverage Gutters" extension installed in VS Code, you can view coverage information directly in your IDE.
+
+### CI Integration
+
+Code coverage is automatically generated in CI using `cargo llvm-cov` and reported to [codecov](https://codecov.io).
+
+## Code Quality Checks
+
+Before running tests, ensure your code passes all quality checks:
+
+<CodeGroup>
+```bash All Checks
+just check
+```
+
+```bash Specific Crate
+just check crate xmtp_mls
+```
+
+```bash Platform Checks
+just wasm check
+just android check
+just ios check
+```
+</CodeGroup>
+
+## Best Practices
+
+1. **Use cargo nextest**: Provides better test isolation and output
+2. **Enable CONTEXTUAL logging**: Makes async test logs easier to read
+3. **Filter logs by crate**: Reduce noise by disabling irrelevant logs
+4. **Use descriptive test names**: Use `TesterBuilder.with_name()` for better log output
+5. **Run coverage locally**: Check coverage before submitting PRs

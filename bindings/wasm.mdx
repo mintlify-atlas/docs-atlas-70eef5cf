@@ -1,0 +1,594 @@
+---
+title: WebAssembly Bindings
+description: WASM bindings for browser-based XMTP applications
+---
+
+The WebAssembly (WASM) bindings provide native XMTP functionality for browser-based applications. These bindings compile the core LibXMTP Rust library to WebAssembly, enabling secure messaging directly in the browser without a backend server.
+
+<Note>
+These bindings are low-level interfaces. For most browser development, use the [xmtp-js SDK](https://github.com/xmtp/xmtp-js) instead, which provides a higher-level API built on top of these bindings.
+</Note>
+
+## Installation
+
+The bindings will be published to npm as `@xmtp/wasm-bindings`:
+
+```bash
+npm install @xmtp/wasm-bindings
+# or
+yarn add @xmtp/wasm-bindings
+```
+
+### Requirements
+
+- Modern browser with WebAssembly support
+- ES2020+ JavaScript environment
+- Web Worker support (for OPFS and background operations)
+
+## Architecture
+
+The WASM bindings compile Rust code to WebAssembly using [wasm-bindgen](https://rustwasm.github.io/wasm-bindgen/).
+
+### Key Technologies
+
+- **wasm-bindgen**: Rust/WASM/JS interop framework
+- **wasm-pack**: Build tool for WASM modules
+- **OPFS**: Origin Private File System for encrypted local storage
+- **Web Workers**: Background execution for crypto operations
+- **Emscripten**: Toolchain for compiling Rust to WASM
+
+### Browser Storage
+
+The WASM bindings support multiple storage backends:
+
+<Tabs>
+  <Tab title="OPFS (Recommended)">
+    **Origin Private File System** - Modern, performant file storage
+    - Persistent encrypted SQLite database
+    - Runs in Web Worker for better performance
+    - Requires modern browser support
+    - No storage limits (quota-based)
+  </Tab>
+  <Tab title="Ephemeral">
+    **In-Memory Storage** - Temporary session storage
+    - No persistence across page reloads
+    - Useful for testing and temporary sessions
+    - No Web Worker required
+  </Tab>
+</Tabs>
+
+### Code Organization
+
+The WASM bindings share most code with Node.js bindings but with platform-specific implementations:
+
+```
+src/
+├── lib.rs                 # WASM-specific entry point
+├── client/                # Client implementation
+├── conversations/         # Conversations API
+├── conversation/          # Conversation operations
+├── content_types/         # Message content types
+└── wasm/                  # WASM-specific utilities
+    ├── opfs.rs            # OPFS storage adapter
+    └── worker.rs          # Web Worker integration
+```
+
+## Basic Usage
+
+### Initialization
+
+WASM modules must be initialized before use:
+
+```javascript
+import init, { createTestClient } from '@xmtp/wasm-bindings'
+
+// Initialize the WASM module
+await init()
+
+// Now you can use the bindings
+const client = await createTestClient()
+```
+
+### Creating a Client
+
+```javascript
+import init, { AuthHandle, createAuthTestClient } from '@xmtp/wasm-bindings'
+
+await init()
+
+// Create client with authentication
+const handle = new AuthHandle()
+const client = await createAuthTestClient(
+  {
+    on_auth_required: async () => {
+      // Get authentication token
+      const token = await getAuthToken()
+      return {
+        value: `Bearer ${token}`,
+        expiresAtSeconds: BigInt(Date.now() + 3600000)
+      }
+    }
+  },
+  handle
+)
+
+console.log('Client created:', client.inboxId())
+```
+
+### Working with Conversations
+
+```javascript
+// Create a group
+const group = await client
+  .conversations()
+  .createGroupByInboxIds(['inbox-id-1', 'inbox-id-2'])
+
+// Send a message
+await group.send('Hello from WASM!')
+
+// Stream messages
+const stream = await group.streamMessages()
+for await (const message of stream) {
+  console.log('New message:', message.content())
+}
+```
+
+### Streaming Conversations
+
+```javascript
+// Stream with callback
+const conversations = []
+const streamCallback = async (conversation) => {
+  conversations.push(conversation)
+  console.log('New conversation:', conversation.id())
+}
+
+const stream = await client
+  .conversations()
+  .stream({ on_conversation: streamCallback })
+
+// Conversations will be added to the array as they arrive
+```
+
+## Development
+
+### Prerequisites
+
+For development, you need:
+
+- Rust toolchain with `wasm32-unknown-unknown` target
+- [Emscripten](https://emscripten.org/) for WASM compilation
+- LLVM (for emscripten dependency)
+- Node.js and Yarn
+
+### Setup
+
+<CodeGroup>
+
+```bash macOS
+# Install emscripten
+brew install emscripten
+
+# Install LLVM and add to PATH
+brew install llvm
+export PATH="/opt/homebrew/opt/llvm/bin:$PATH"
+
+# Install dependencies
+yarn install
+```
+
+```bash Nix (Recommended)
+# Enter WASM development shell
+nix develop .#wasm
+
+# Dependencies are automatically available
+yarn install
+```
+
+</CodeGroup>
+
+### Build Commands
+
+<Tabs>
+  <Tab title="macOS">
+    ```bash
+    # Check compilation
+    yarn check:macos
+
+    # Build release version
+    yarn build:macos
+
+    # Run linting
+    yarn lint:macos
+
+    # Run integration tests
+    yarn test:integration:macos
+    ```
+  </Tab>
+  <Tab title="Just (Recommended)">
+    ```bash
+    # Check compilation
+    just wasm check
+
+    # Build release version
+    just wasm build
+
+    # Run linting
+    just wasm lint
+
+    # Run tests
+    just wasm test
+    ```
+  </Tab>
+  <Tab title="Standard">
+    ```bash
+    # Install dependencies
+    yarn
+
+    # Build release version
+    yarn build
+
+    # Run cargo tests (wasm32 target)
+    yarn test
+
+    # Run integration tests (vitest)
+    yarn test:integration
+
+    # Type checking
+    yarn typecheck
+
+    # Linting
+    yarn lint
+    ```
+  </Tab>
+</Tabs>
+
+### Linting and Formatting
+
+```bash
+# Run all linting
+yarn lint
+
+# Format integration tests
+yarn format:check
+
+# Type checking
+yarn typecheck
+```
+
+## Testing
+
+### Unit Tests (Rust)
+
+Run Rust tests compiled to WASM:
+
+```bash
+# Run with wasm32-unknown-unknown target
+yarn test
+
+# Or using just
+just wasm test
+```
+
+### Integration Tests (TypeScript)
+
+Run browser-based integration tests:
+
+```bash
+# Start local backend
+just backend up
+
+# Run integration tests with Vitest
+yarn test:integration
+
+# macOS-specific command
+yarn test:integration:macos
+```
+
+### Test Structure
+
+Integration tests in `test/`:
+
+- `client.test.ts` - Client creation and management
+- `Conversations.test.ts` - Conversation operations
+- `EnrichedMessage.test.ts` - Content types
+- `RemoteAttachmentEncryption.test.ts` - Attachment handling
+- `opfs.test.ts` - OPFS storage tests
+- `errorCodes.test.ts` - Error handling
+
+### Example Test
+
+```typescript
+import { expect, test } from "vitest"
+import init, {
+  AuthHandle,
+  Conversation,
+  createAuthTestClient,
+  createTestClient,
+} from "../"
+
+await init()
+
+test("streams groups local", async () => {
+  const alix = await createTestClient()
+  const bo = await createTestClient()
+  const caro = await createTestClient()
+  
+  const stream = await alix.conversations().streamLocal()
+  const g = await alix.conversations().createGroupByInboxIds([bo.inboxId])
+  
+  let groups: string[] = []
+  let reader = stream.getReader()
+  let i = 0
+  while (i < 3) {
+    const { value } = await reader.read()
+    groups.push(value.id())
+    i++
+  }
+  
+  expect(groups.length).toBe(3)
+  expect(groups.includes(g.id())).toBe(true)
+})
+
+test("auth callback", async () => {
+  const handle = new AuthHandle()
+  let called = false
+  
+  await createAuthTestClient(
+    {
+      on_auth_required: async () => {
+        called = true
+        return {
+          value: "Bearer 1234567890",
+          expiresAtSeconds: BigInt(Date.now() + 1000),
+        }
+      },
+    },
+    handle,
+  )
+  
+  expect(called).toBe(true)
+})
+```
+
+## Advanced Patterns
+
+### OPFS Storage
+
+For persistent storage, use OPFS in a Web Worker:
+
+```javascript
+// In main thread
+const worker = new Worker('xmtp-worker.js')
+
+// In worker (xmtp-worker.js)
+importScripts('wasm-bindings.js')
+
+self.addEventListener('message', async (event) => {
+  if (event.data.type === 'init') {
+    await init()
+    
+    // Create client with OPFS storage
+    const client = await createClientWithOPFS({
+      dbPath: '/xmtp-db',
+      apiUrl: 'https://grpc.dev.xmtp.network:443'
+    })
+    
+    self.postMessage({ type: 'ready', inboxId: client.inboxId() })
+  }
+})
+```
+
+### Error Handling
+
+```javascript
+import init, { createTestClient } from '@xmtp/wasm-bindings'
+
+try {
+  await init()
+  const client = await createTestClient()
+  await client.conversations().createGroupByInboxIds(['invalid-inbox'])
+} catch (error) {
+  if (error.message.includes('NotFound')) {
+    console.error('Inbox not found')
+  } else if (error.message.includes('Unauthorized')) {
+    console.error('Authentication failed')
+  } else {
+    console.error('Unexpected error:', error)
+  }
+}
+```
+
+### Streaming with ReadableStream
+
+```javascript
+// Local streaming (no network)
+const stream = await client.conversations().streamLocal()
+const reader = stream.getReader()
+
+try {
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) break
+    
+    console.log('New conversation:', value.id())
+  }
+} finally {
+  reader.releaseLock()
+}
+```
+
+### Authentication Callbacks
+
+```javascript
+const client = await createAuthTestClient(
+  {
+    on_auth_required: async () => {
+      try {
+        // Call your auth endpoint
+        const response = await fetch('/api/xmtp-token')
+        const { token, expiresAt } = await response.json()
+        
+        return {
+          value: token,
+          expiresAtSeconds: BigInt(expiresAt)
+        }
+      } catch (error) {
+        console.error('Auth failed:', error)
+        throw error
+      }
+    }
+  },
+  new AuthHandle()
+)
+```
+
+## Performance Considerations
+
+### Bundle Size
+
+WASM bindings are compiled to a binary module:
+
+- Base WASM module: ~2-4 MB (compressed)
+- Code splitting recommended for large apps
+- Use dynamic imports to lazy-load bindings
+
+```javascript
+// Lazy load WASM bindings
+const loadXMTP = async () => {
+  const { default: init, createTestClient } = await import('@xmtp/wasm-bindings')
+  await init()
+  return { createTestClient }
+}
+
+// Load only when needed
+button.addEventListener('click', async () => {
+  const { createTestClient } = await loadXMTP()
+  const client = await createTestClient()
+})
+```
+
+### Web Workers
+
+For better performance, run WASM in a Web Worker:
+
+- Keeps crypto operations off main thread
+- Required for OPFS storage
+- Enables true background processing
+
+### Memory Management
+
+- WASM memory grows dynamically
+- Objects are garbage collected
+- Streams should be properly closed
+
+```javascript
+const stream = await group.streamMessages()
+const reader = stream.getReader()
+
+try {
+  // Use stream
+} finally {
+  // Always release reader
+  reader.releaseLock()
+}
+```
+
+## Browser Compatibility
+
+### Required Features
+
+- WebAssembly (all modern browsers)
+- BigInt support (Chrome 67+, Firefox 68+, Safari 14+)
+- ES2020+ (async/await, optional chaining)
+
+### Optional Features
+
+- OPFS (Chrome 102+, Edge 102+) - for persistent storage
+- Web Workers (all modern browsers) - for background operations
+
+### Polyfills
+
+For older browsers, you may need:
+
+```html
+<!-- BigInt polyfill for Safari 13 -->
+<script src="https://cdn.jsdelivr.net/npm/jsbi@4.3.0/dist/jsbi.min.js"></script>
+```
+
+## Troubleshooting
+
+### WASM Module Failed to Load
+
+Ensure your bundler serves `.wasm` files correctly:
+
+```javascript
+// Vite config
+export default {
+  optimizeDeps: {
+    exclude: ['@xmtp/wasm-bindings']
+  },
+  server: {
+    fs: {
+      allow: ['..'] // Allow WASM files
+    }
+  }
+}
+```
+
+### Memory Errors
+
+If you see "out of memory" errors:
+
+```javascript
+// Increase WASM memory limit
+import init from '@xmtp/wasm-bindings'
+
+await init(undefined, {
+  memory: new WebAssembly.Memory({
+    initial: 256, // 16MB
+    maximum: 32768 // 2GB
+  })
+})
+```
+
+### OPFS Not Available
+
+OPFS requires a secure context (HTTPS):
+
+```javascript
+if (!navigator.storage?.getDirectory) {
+  console.warn('OPFS not available, falling back to ephemeral storage')
+  // Use in-memory storage instead
+}
+```
+
+## Publishing
+
+To release a new version:
+
+1. Update version in `package.json`
+2. Merge to main branch
+3. Manually trigger "Release WASM Bindings" workflow
+
+The workflow will:
+- Build WASM bindings for all platforms
+- Run tests
+- Publish to npm
+
+## Resources
+
+<CardGroup cols={2}>
+  <Card title="wasm-bindgen Book" icon="book" href="https://rustwasm.github.io/wasm-bindgen/">
+    Learn about Rust/WASM/JS interop
+  </Card>
+  <Card title="Source Code" icon="github" href="https://github.com/xmtp/libxmtp/tree/main/bindings/wasm">
+    View the bindings source code
+  </Card>
+  <Card title="XMTP-JS SDK" icon="code" href="https://github.com/xmtp/xmtp-js">
+    Use the high-level JavaScript SDK
+  </Card>
+  <Card title="OPFS Documentation" icon="globe" href="https://developer.mozilla.org/en-US/docs/Web/API/File_System_API/Origin_private_file_system">
+    Learn about browser file storage
+  </Card>
+</CardGroup>
