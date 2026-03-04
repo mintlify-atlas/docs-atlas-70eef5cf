@@ -304,7 +304,7 @@ import {
   createClient, 
   PermissionPolicy,
   MetadataField 
-} from '@xmtp/node-sdk'
+} from '@xmtp/node-bindings'
 
 // Create admin-only group
 const group = await client.conversations().createGroup(
@@ -333,7 +333,7 @@ const isSuperAdmin = await conversation.isSuperAdmin(inboxId)
 ```
 
 ```typescript Update Permissions
-import { PermissionUpdateType, PermissionPolicy } from '@xmtp/node-sdk'
+import { PermissionUpdateType, PermissionPolicy } from '@xmtp/node-bindings'
 
 // Update add member permission
 await conversation.updatePermission(

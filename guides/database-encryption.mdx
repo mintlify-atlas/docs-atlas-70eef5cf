@@ -181,7 +181,7 @@ Store encryption keys securely using platform keychains:
   
   <Tab title="Node.js">
     ```typescript
-    import { createSecureKey, generateKey } from '@xmtp/node-sdk'
+    import { createSecureKey, generateKey } from '@xmtp/node-bindings'
     import * as fs from 'fs'
     import * as path from 'path'
     
@@ -258,7 +258,7 @@ The default SQLCipher settings provide strong security. Only modify cipher setti
 <CodeGroup>
 
 ```typescript Create Encrypted Client
-import { createClient, generateKey } from '@xmtp/node-sdk'
+import { createClient, generateKey } from '@xmtp/node-bindings'
 
 // Generate encryption key
 const encryptionKey = generateKey()
@@ -274,7 +274,7 @@ saveKeySecurely(encryptionKey)
 ```
 
 ```typescript Load Existing Client
-import { createClient } from '@xmtp/node-sdk'
+import { createClient } from '@xmtp/node-bindings'
 
 // Load saved encryption key
 const encryptionKey = loadKeySecurely()
@@ -288,7 +288,7 @@ const client = await createClient(user, encryptionKey)
 ```
 
 ```typescript Handle Key Errors
-import { createClient } from '@xmtp/node-sdk'
+import { createClient } from '@xmtp/node-bindings'
 
 try {
   const client = await createClient(user, encryptionKey)
